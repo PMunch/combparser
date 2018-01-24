@@ -20,15 +20,19 @@ proc Nothing*[T]: Maybe[T] =
   result.hasValue = false
 
 proc regex*(regex: Regex): Parser[string] =
+  ## Returns a parser that returns the string matched by the regex
   (proc (input: string): Maybe[(string, string)] =
     let (first, last) = findBounds(input, regex)
     if first == 0:
-      Just((match: input[0 .. last], rest: input[(last + 1) .. input.len]))
+      Just((input[0 .. last], input[(last + 1) .. input.len]))
     else:
       Nothing[(string, string)]()
   )
 
 proc repeat*[T](body: Parser[T]): Parser[DoublyLinkedList[T]] =
+  ## Returns a parser that returns a linked list of the input parsers type.
+  ## Used to accept more multiple elements matching a pattern. If there is
+  ## no match this will return an empty list and all the input as it's rest
   (proc (input: string): Maybe[(DoublyLinkedList[T], string)] =
     var list = initDoublyLinkedList[T]()
     var rest = input
@@ -44,6 +48,8 @@ proc repeat*[T](body: Parser[T]): Parser[DoublyLinkedList[T]] =
   )
 
 proc `/`*[T](lhs, rhs: Parser[T]): Parser[T] =
+  ## Or operation. Takes two parser and returns a parser that will return
+  ## the first matching parser.
   (proc (input: string): Maybe[(T, string)] =
     let lresult = lhs(input)
     if lresult.hasValue:
@@ -53,6 +59,8 @@ proc `/`*[T](lhs, rhs: Parser[T]): Parser[T] =
   )
 
 proc `+`*[T, U](lhs: Parser[T], rhs: Parser[U]): Parser[(T, U)] =
+  ## And operation. Takes two parsers and returns a new parser with the tuple
+  ## of the input parsers results. This only returns if both are true.
   (proc (input: string): Maybe[((T, U), string)] =
     let lresult = lhs(input)
     if lresult.hasValue:
@@ -68,6 +76,8 @@ proc `+`*[T, U](lhs: Parser[T], rhs: Parser[U]): Parser[(T, U)] =
   )
 
 proc s*(value: string): Parser[string] =
+  ## Start with parser. Returns a parser that matches if the input starts
+  ## with the given string.
   (proc (input: string): Maybe[(string, string)] =
     if input.startsWith(value):
       Just ((input[0 .. (value.len - 1)], input[value.len .. input.len]))
@@ -76,6 +86,8 @@ proc s*(value: string): Parser[string] =
   )
 
 proc map*[T, U](parser: Parser[T], f: (proc(value: T): U)): Parser[U] =
+  ## Takes a parser and a function to converts it's type into another type and
+  ## returns a parser that outputs the second type.
   (proc (input: string): Maybe[(U, string)] =
     let xresult = parser(input)
     if xresult.hasValue:
@@ -86,6 +98,9 @@ proc map*[T, U](parser: Parser[T], f: (proc(value: T): U)): Parser[U] =
   )
 
 proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U] =
+  ## Similar to map this takes a parser and a function to make a conversion. The difference
+  ## is that while the above takes a converter from one type to another. This takes a converter
+  ## from one type to a parser of another type.
   (proc (input: string): Maybe[(U, string)] =
     let xresult = parser(input)
     if xresult.hasValue:
@@ -96,7 +111,7 @@ proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U
   )
 
 proc chainl*[T](p: Parser[T], q: Parser[(proc(a: T, b: T): T)]): Parser[T] =
-  (p + (q + p).repeat()).map(proc(values: (T, DoublyLinkedList[((proc(a: int, b: int): int), T)])): T =
+  (p + (q + p).repeat()).map(proc(values: (T, DoublyLinkedList[((proc(a: T, b: T): T), T)])): T =
     let (x, xs) = values
     var a = x
     for fb in xs:
@@ -140,3 +155,6 @@ when isMainModule:
 
   echo E()("( 1 + 2 )  *   ( 3 + 4 )  Hello world")
   echo E()("1+2 * 5")
+
+  echo regex(re"[0-9]*")("124ei51") #(value: (Field0: 124, Field1: ei51), hasValue: true)
+
