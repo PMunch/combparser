@@ -3,6 +3,7 @@
 ## The idea is to make this into a more user friendly library for
 ## creating parsers in Nim.
 import strutils
+import sequtils
 import lists
 import re
 
@@ -11,23 +12,85 @@ type
   Maybe*[T] = object
     value: T
     hasValue: bool
+    errors: seq[string]
 
 proc Just*[T](value: T): Maybe[T] =
   result.hasValue = true
   result.value = value
+  result.errors = nil
 
 proc Nothing*[T]: Maybe[T] =
   result.hasValue = false
+  result.errors = nil
 
-proc regex*(regex: Regex): Parser[string] =
+#proc Error*[T](error: string): Maybe[T] =
+#  result.hasValue = false
+#  result.errors = @[error]
+
+proc addError*[T](old: Maybe[T], error: string): Maybe[T] =
+  echo "Adding error \"" & error & "\" to: " & $old
+  result = old
+  if result.errors == nil:
+    result.errors = @[error]
+  else:
+    result.errors = result.errors & error
+
+proc Error*[T](error: string): Maybe[T] =
+  addError[T](Nothing[T](), error)
+
+proc regex*(regexStr: string): Parser[string] =
   ## Returns a parser that returns the string matched by the regex
   (proc (input: string): Maybe[(string, string)] =
-    let (first, last) = findBounds(input, regex)
+    let (first, last) = findBounds(input, re(regexStr))
+    echo "Match for regex " & regexStr & " in string \"" & input & "\" is (" & $first & ", " & $last & ")"
     if first == 0:
       Just((input[0 .. last], input[(last + 1) .. input.len]))
     else:
+      Error[(string, string)]("String did not match regex " & regexStr &
+        " got: " & $input)
+  )
+
+proc s*(value: string): Parser[string] =
+  ## Start with parser. Returns a parser that matches if the input starts
+  ## with the given string.
+  (proc (input: string): Maybe[(string, string)] =
+    if input.startsWith(value):
+      echo "String " & input & " starts with \"" & value & "\""
+      Just ((input[0 .. (value.len - 1)], input[value.len .. input.len]))
+    else:
+      echo "String " & input & " doesn't start with \"" & value & "\""
+      Error[(string, string)]("String did not start with \"" & value & "\", got" &
+        " " & input)
+  )
+
+proc any*(): Parser[string] =
+  (proc (input: string): Maybe[(string, string)] =
+    if input.len > 0:
+      # echo $input[0]
+      # echo $input[1..^1]
+      Just(($input[0], input[1..^1]))
+    else:
       Nothing[(string, string)]()
   )
+
+proc absent*[T](body: Parser[T]): Parser[string] =
+  (proc (input: string): Maybe[(string, string)] =
+    let res = body(input)
+    if res.hasValue:
+      Error[(string, string)]("Expected absence of symbol but got " & input)
+    else:
+      # Just(("", input))
+      Nothing[(string, string)]()
+  )
+
+proc reduce*[T](body: Parser[DoublyLinkedList[T]], op: proc(v1: T, v2: T): T): Parser[T] =
+  (proc (input: string): Maybe[(T, string)] =
+    let res = body(input)
+    result = res[0]
+    for i in res[1..^1]:
+      result = op(result, i)
+  )
+
 
 proc repeat*[T](body: Parser[T]): Parser[DoublyLinkedList[T]] =
   ## Returns a parser that returns a linked list of the input parsers type.
@@ -43,7 +106,10 @@ proc repeat*[T](body: Parser[T]): Parser[DoublyLinkedList[T]] =
         list.append(xvalue)
         rest = xnext
       else:
-        return Just((list, rest))
+        if xresult.errors != nil:
+          return Just((list,rest)).addError("Error occured while parsing list")
+        else:
+          return Just((list, rest))
     nil
   )
 
@@ -53,9 +119,18 @@ proc `/`*[T](lhs, rhs: Parser[T]): Parser[T] =
   (proc (input: string): Maybe[(T, string)] =
     let lresult = lhs(input)
     if lresult.hasValue:
-      lresult
+      result = lresult
     else:
-      rhs(input)
+      let rresult = rhs(input)
+      if rresult.errors != nil:
+        if rresult.hasValue:
+          result = addError[(T, string)](rresult, "Expected one of two values but found none")
+        else:
+          result = Error[(T, string)]("Expected one of two values but found none")
+      else:
+        result = rresult
+      if lresult.errors != nil:
+        result.errors = result.errors.concat(lresult.errors)
   )
 
 proc `+`*[T, U](lhs: Parser[T], rhs: Parser[U]): Parser[(T, U)] =
@@ -68,21 +143,29 @@ proc `+`*[T, U](lhs: Parser[T], rhs: Parser[U]): Parser[(T, U)] =
       let rresult = rhs(lnext)
       if rresult.hasValue:
         let (rvalue, rnext) = rresult.value
-        Just (((lvalue, rvalue), rnext))
+        result = Just(((lvalue, rvalue), rnext))
+        if rresult.errors != nil:
+          result = result.addError("Expected two values, but second value didn't match")
       else:
-        Nothing[((T, U), string)]()
+        if rresult.errors != nil:
+          result = Nothing[((T, U), string)]()
+          return result.addError("Expected two values, but second value didn't match")
+        else:
+          return Nothing[((T, U), string)]()
     else:
-      Nothing[((T, U), string)]()
+      if lresult.errors != nil:
+        result = Nothing[((T, U), string)]()
+        return result.addError("Expected two values, but second value didn't match")
+      else:
+        return Nothing[((T, U), string)]()
   )
 
-proc s*(value: string): Parser[string] =
-  ## Start with parser. Returns a parser that matches if the input starts
-  ## with the given string.
-  (proc (input: string): Maybe[(string, string)] =
-    if input.startsWith(value):
-      Just ((input[0 .. (value.len - 1)], input[value.len .. input.len]))
-    else:
-      Nothing[(string, string)]()
+proc silence*[T](parser: Parser[T]): Parser[T] =
+  (proc (input: string): Maybe[(T, string)] =
+    var xresult = parser(input)
+    xresult.errors = nil
+    echo "Silencing: " & $xresult
+    return xresult
   )
 
 proc map*[T, U](parser: Parser[T], f: (proc(value: T): U)): Parser[U] =
@@ -90,11 +173,20 @@ proc map*[T, U](parser: Parser[T], f: (proc(value: T): U)): Parser[U] =
   ## returns a parser that outputs the second type.
   (proc (input: string): Maybe[(U, string)] =
     let xresult = parser(input)
+    echo "Mapping: " & $xresult.errors & ", " & $xresult.hasValue
     if xresult.hasValue:
       let (xvalue, xnext) = xresult.value
-      Just((f(xvalue), xnext))
+      result = Just((f(xvalue), xnext))
+      if xresult.errors != nil:
+        result.errors = xresult.errors
+        return result.addError("Trying to map a function but got error in deeper match")
     else:
-      Nothing[(U, string)]()
+      if xresult.errors != nil:
+        result = Nothing[(U, string)]()
+        result.errors = xresult.errors
+        return result.addError("Trying to map a function but got error in deeper match")
+      else:
+        return Nothing[(U, string)]()
   )
 
 proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U] =
@@ -105,13 +197,20 @@ proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U
     let xresult = parser(input)
     if xresult.hasValue:
       let (xvalue, xnext) = xresult.value
-      f(xvalue)(xnext)
+      (f(xvalue)(xnext)).addError("Trying to flatmap a function but got error in deeper match")
     else:
-      Nothing[(U, string)]()
+      if xresult.errors != nil:
+        Error[(U, string)]("Trying to flatmap a function but got error in deeper match")
+      else:
+        Nothing[(U, string)]()
   )
 
-proc chainl*[T](p: Parser[T], q: Parser[(proc(a: T, b: T): T)]): Parser[T] =
-  (p + (q + p).repeat()).map(proc(values: (T, DoublyLinkedList[((proc(a: T, b: T): T), T)])): T =
+proc chainl*[T](p: Parser[T], op: Parser[(proc(a: T, b: T): T)]): Parser[T] =
+  ## Takes two parsers, one that returns a type, and a second that takes an operator over that
+  ## type. Returns a new parser that parses zero or more occurences of the type separated by
+  ## the operator and applies the operator to the types in a left-associative manner.
+  (p + (op + p).repeat()).map(proc(values: (T, DoublyLinkedList[((proc(a: T, b: T): T), T)])): T =
+    echo "------------------------------"
     let (x, xs) = values
     var a = x
     for fb in xs:
@@ -145,16 +244,25 @@ when isMainModule:
   )
 
   proc P(): Parser[int] =
-    regex(re"\s*\(\s*").flatMap(proc(_: string): Parser[int] =
+    regex(r"\s*\(\s*").flatMap(proc(_: string): Parser[int] =
+      echo "Looking for expression"
       E().flatMap(proc(e: int): Parser[int] =
-        regex(re"\s*\)\s*").map(proc(_: string): int =
+        regex(r"\s*\)\s*").map(proc(_: string): int =
           e))) / number()
 
-  proc number(): Parser[int] = regex(re"\s*[0-9]*\s*").map(proc(n: string): int =
+  proc number(): Parser[int] = regex(r"\s*[0-9]+\s*").map(proc(n: string): int =
     parseInt(n.strip()))
 
-  echo E()("( 1 + 2 )  *   ( 3 + 4 )  Hello world")
+  let t = E()("( 1 + 2 )  *   ( 3 + 4 )  Hello world")
+  echo t.value
+  for i, error in t.errors:
+    echo " ".repeat(i) & error
+  #[
   echo E()("1+2 * 5")
 
-  echo regex(re"[0-9]*")("124ei51") #(value: (Field0: 124, Field1: ei51), hasValue: true)
+  echo regex(r"[0-9]*")("124ei51") #(value: (Field0: 124, Field1: ei51), hasValue: true)
 
+  echo (s("\"") + (
+    s("\"").absent() + any()
+  ).repeat() + s("\""))("\"This is a test\"Wooo")
+  ]#
