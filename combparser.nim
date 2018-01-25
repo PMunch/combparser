@@ -14,24 +14,33 @@ type
   Maybe*[T] = object
     value: T
     hasValue: bool
+    errors: seq[string]
 
 proc Just*[T](value: T): Maybe[T] =
   result.hasValue = true
   result.value = value
+  result.errors = nil
 
-proc Nothing*[T]: Maybe[T] =
+proc Nothing*[T, U](old: Maybe[U], error: string): Maybe[T] =
   result.hasValue = false
+  result.errors = old.errors
+  result.errors.add error
+
+proc Nothing*[T](error: string): Maybe[T] =
+  result.hasValue = false
+  result.errors = @[error]
 
 proc regex*(regexStr: string): Parser[string] =
   let regex = re(regexStr)
   ## Returns a parser that returns the string matched by the regex
   (proc (input: string): Maybe[(string, string)] =
-    echo red("Trying to match regex " & regexStr & " to " & input)
     let (first, last) = findBounds(input, regex)
     if first == 0:
+      echo red("Matched regex " & regexStr & " to " & input)
       Just((input[0 .. last], input[(last + 1) .. input.len]))
     else:
-      Nothing[(string, string)]()
+      echo red("Couldn't match regex " & regexStr & " to " & input)
+      Nothing[(string, string)]("Couldn't match regex " & regexStr & " with input " & input)
   )
 
 proc repeat*[T](body: Parser[T]): Parser[DoublyLinkedList[T]] =
@@ -52,7 +61,15 @@ proc repeat*[T](body: Parser[T]): Parser[DoublyLinkedList[T]] =
         rest = xnext
       else:
         echo green($internalDebug & ": Done repeatedly matching on " & input)
-        return Just((list, rest))
+        if rest == input:
+          var ret = Just((list, rest))
+          ret.errors = xresult.errors
+          ret.errors.add "Repeat found zero matching elements"
+          #let ret = Nothing[(DoublyLinkedList[T], string)](xresult, "Repeat found zero matcing elements")
+          echo "\terrors: " & $ret.errors
+          return ret
+        else:
+          return Just((list, rest))
     nil
   )
 
@@ -86,13 +103,17 @@ proc `+`*[T, U](lhs: Parser[T], rhs: Parser[U]): Parser[(T, U)] =
       if rresult.hasValue:
         let (rvalue, rnext) = rresult.value
         echo yellow($internalDebug & ": Succesfully matched both on " & input)
-        Just (((lvalue, rvalue), rnext))
+        return Just (((lvalue, rvalue), rnext))
       else:
         echo yellow($internalDebug & ": Unable to match second on " & input)
-        Nothing[((T, U), string)]()
+        let ret = Nothing[((T, U), string)](rresult, "Unable to match second of two parsers on " & input)
+        echo "\terrors: " & $ret.errors
+        return ret
     else:
       echo yellow($internalDebug & ": Unable to match first on " & input)
-      Nothing[((T, U), string)]()
+      let ret = Nothing[((T, U), string)](lresult, "Unable to match first of two parsers on " & input)
+      echo "\terrors: " & $ret.errors
+      return ret
   )
 
 proc s*(value: string): Parser[string] =
@@ -107,7 +128,7 @@ proc s*(value: string): Parser[string] =
       Just ((input[0 .. (value.len - 1)], input[value.len .. input.len]))
     else:
       echo magenta($internalDebug & ": String \"" & input & "\" didn't start with " & value)
-      Nothing[(string, string)]()
+      Nothing[(string, string)]("String " & input & " did not start with " & value & " as expected")
   )
 
 proc map*[T, U](parser: Parser[T], f: (proc(value: T): U)): Parser[U] =
@@ -121,10 +142,12 @@ proc map*[T, U](parser: Parser[T], f: (proc(value: T): U)): Parser[U] =
     if xresult.hasValue:
       let (xvalue, xnext) = xresult.value
       echo cyan($internalDebug & ": Mapping succeded with input " & input)
-      Just((f(xvalue), xnext))
+      return Just((f(xvalue), xnext))
     else:
       echo cyan($internalDebug & ": Mapping failed with input " & input)
-      Nothing[(U, string)]()
+      let ret = Nothing[(U, string)](xresult, "Unable to map onto bad input")
+      echo "\terrors: " & $ret.errors
+      return ret
   )
 
 proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U] =
@@ -139,10 +162,12 @@ proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U
     if xresult.hasValue:
       let (xvalue, xnext) = xresult.value
       echo cyan($internalDebug & ": Flat-mapping succeded with input " & input)
-      f(xvalue)(xnext)
+      return f(xvalue)(xnext)
     else:
       echo cyan($internalDebug & ": Flat-mapping failed with input " & input)
-      Nothing[(U, string)]()
+      let ret = Nothing[(U, string)](xresult, "Unable to flat-map onto bad input")
+      echo "\terrors: " & $ret.errors
+      return ret
   )
 
 proc chainl*[T](p: Parser[T], q: Parser[(proc(a: T, b: T): T)]): Parser[T] =
@@ -186,7 +211,8 @@ when isMainModule:
         regex(r"\s*\)\s*").map(proc(_: string): int =
           e))) / number()
 
-  proc number(): Parser[int] = regex(r"\s*[0-9]*\s*").map(proc(n: string): int =
+  proc number(): Parser[int] = regex(r"\s*[0-9]+\s*").map(proc(n: string): int =
+    echo "found integer \"" & n & "\""
     parseInt(n.strip()))
 
   echo E()("( 1 + 2 )  *   ( 3 + 4 )  Hello world")
