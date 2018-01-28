@@ -1,7 +1,12 @@
-## This module is a slightly edited version of an original by kmizu:
+## This module is intended to be a user friendly library for
+## creating parsers in Nim. Currently it only parses strings but
+## the idea is to support mode kinds of input in the future.
+## The initial effort focused on adding better error statements
+## so that parsers are easier to debug.
+##
+## The starting point for this library was created by kmizu:
 ## https://gist.github.com/kmizu/2b10c2bf0ab3eafecc1a825b892482f3
-## The idea is to make this into a more user friendly library for
-## creating parsers in Nim.
+
 import strutils
 import lists
 import re
@@ -197,6 +202,9 @@ proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U
   )
 
 proc chainl*[T](p: Parser[T], q: Parser[(proc(a: T, b: T): T)], allowEmpty = true): Parser[T] =
+  ## Takes two parsers, one that returns a type, and a second that takes an operator over that
+  ## type. Returns a new parser that parses zero or more occurences of the type separated by
+  ## the operator and applies the operator to the types in a left-associative manner.
   (proc(input: string): Maybe[(T, string)] =
     let
       first = p(input)
@@ -217,6 +225,8 @@ proc chainl*[T](p: Parser[T], q: Parser[(proc(a: T, b: T): T)], allowEmpty = tru
   )
 
 template chainl1*[T](p: Parser[T], q: Parser[(proc(a: T, b: T): T)]): Parser[T] =
+  ## Same as the chainl operator but it requires at least one round of operations if there is
+  ## sufficient amount of input for it.
   chainl(p, q, false)
 
 proc getError*[T](input: Maybe[T], original: string = nil): string =
