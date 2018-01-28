@@ -194,7 +194,9 @@ proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U
     if xresult.hasValue:
       let (xvalue, xnext) = xresult.value
       var ret = f(xvalue)(xnext)
-      ret.errors = xresult.errors
+      #if ret.errors == nil:
+      #  ret.errors = xresult.errors
+      Something(ret, xresult, "flatMap operation", input)
       return ret
     else:
       let ret = Nothing[(U, string)](xresult, "Unable to flat-map onto bad output", input)
@@ -240,7 +242,8 @@ proc getError*[T](input: Maybe[T], original: string = nil): string =
               pos = original.rfind(node.input)
               startStr = original[0..<pos]
               startLine = startStr[startStr.rfind("\n")+1..<startStr.len]
-              endStr = node.input[0..<(node.input.find("\n"))]
+              endStrPos = node.input.find("\n")
+              endStr = node.input[0..<(if endStrPos > 0: endStrPos else: node.input.len)]
               newLine = "  ".repeat(level) & node.leafError & " on input \""
             res = res & newLine & startLine & endStr & "\"\n"
             res = res & " ".repeat(newLine.len + startLine.len) & "^\n"
@@ -258,19 +261,66 @@ proc getError*[T](input: Maybe[T], original: string = nil): string =
 
 proc parse*[T](parser: Parser[T], input: string): T =
   let res = parser(input)
-  if res.hasValue:
+  if res.hasValue and (res.value[1] == "" or res.errors == nil):
     return res.value[0]
   else:
     raise newException(ParseError, "Unable to parse:\n" & getError(res, input).indent(2) & "\n")
 
 when isMainModule:
+  type
+    NodeKind = enum Operator, Value
+    Node = ref object
+      case kind: NodeKind
+      of Value:
+        value: int
+      of Operator:
+        operator: string
+        left: Node
+        right: Node
+
+  proc `$`(tree: Node): string =
+    case tree.kind:
+      of Value:
+        "Value(" & $tree.value & ")"
+      of Operator:
+        "Operator(" & $tree.left & " " & tree.operator & " " & $tree.right & ")"
+
+  proc number(): Parser[int]
+  
+  proc Addition(): Parser[Node]
+
+  proc Multiplication(): Parser[Node]
+
+  proc Parenthesis(): Parser[Node]
+
+  proc Expression(): Parser[Node] = Addition()
+
+  proc Addition(): Parser[Node] = Multiplication().chainl(
+    (s("+").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
+    (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "+", left: lhs, right: rhs)))) /
+    (s("-").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
+    (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "-", left: lhs, right: rhs))))
+  )
+
+  proc Multiplication(): Parser[Node] = Parenthesis().chainl(
+    (s("*").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
+      (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "*", left: lhs, right: rhs)))) /
+    (s("/").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
+      (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "/", left: lhs, right: rhs))))
+  )
+
+  proc Parenthesis(): Parser[Node] =
+    regex(r"\s*\(\s*").flatMap(proc(_: string): Parser[Node] =
+      Expression().flatMap(proc(e: Node): Parser[Node] =
+        regex(r"\s*\)\s*").map(proc(_: string): Node =
+          e))) / number().map(proc(val: int): Node =
+            Node(kind: Value, value: val))
+
   proc A(): Parser[int]
 
   proc M(): Parser[int]
 
   proc P(): Parser[int]
-
-  proc number(): Parser[int]
 
   proc E(): Parser[int] = A()
 
@@ -297,6 +347,12 @@ when isMainModule:
   proc number(): Parser[int] = regex(r"\s*[0-9]+\s*").map(proc(n: string): int =
     parseInt(n.strip()))
 
+  echo parse(Expression(), "( 1 + 2 )  *   ( 3 + 4 )")
+  echo "-----------------------------------------"
+  echo parse(Expression(), " 1 + 2  *  3 + 4")
+  echo "-----------------------------------------"
+  #echo parse(Expression(), "1 + 2  *  3 + 4 Hello world")
+  echo "-----------------------------------------"
   var res: Maybe[(int, string)]
   res = E()("( 1 + 2 )  *   ( 3 + 4 )  Hello world")
   if res.hasValue:
