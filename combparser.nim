@@ -6,9 +6,6 @@ import strutils
 import lists
 import re
 import macros
-when defined(parserDebug):
-  import termstyle
-  var debug = 0
 
 type
   Parser*[T] = proc(input: string): Maybe[(T, string)]
@@ -86,12 +83,8 @@ macro regex*(regexStr: string): Parser[string] =
       let regex = re(`regexStr`)
       let (first, last) = findBounds(input, regex)
       if first == 0:
-        when defined(parserDebug):
-          echo red("Matched regex " & `regexStr` & " to " & input)
         Just((input[0 .. last], input[(last + 1) .. input.len]))
       else:
-        when defined(parserDebug):
-          echo red("Couldn't match regex " & `regexStr` & " to " & input)
         Nothing[(string, string)](`pos` & ": Couldn't match regex \"" & `regexStr` & "\"", input)
     )
 
@@ -101,17 +94,9 @@ macro s*(value: string): Parser[string] =
   let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: string): Maybe[(string, string)] =
-      when defined(parserDebug):
-        debug += 1
-        let internalDebug = debug
-        echo magenta($internalDebug & ": Checking if string \"" & input & "\" starts with " & `value`)
       if input.startsWith(`value`):
-        when defined(parserDebug):
-          echo magenta($internalDebug & ": String \"" & input & "\" started with " & `value`)
         Just ((input[0 .. (`value`.len - 1)], input[`value`.len .. input.len]))
       else:
-        when defined(parserDebug):
-          echo magenta($internalDebug & ": String \"" & input & "\" didn't start with " & `value`)
         Nothing[(string, string)](`pos` & ": Starts with operation failed: input did not start with \"" & `value` & "\"", input)
     )
 
@@ -120,10 +105,6 @@ proc repeat*[T](body: Parser[T], atLeast: int = 1): Parser[DoublyLinkedList[T]] 
   ## Used to accept more multiple elements matching a pattern. If there is
   ## no match this will return an empty list and all the input as it's rest
   (proc (input: string): Maybe[(DoublyLinkedList[T], string)] =
-    when defined(parserDebug):
-      debug += 1
-      let internalDebug = debug
-      echo green($internalDebug & ": Trying to repeatedly match on " & input)
     var
       list = initDoublyLinkedList[T]()
       rest = input
@@ -138,8 +119,6 @@ proc repeat*[T](body: Parser[T], atLeast: int = 1): Parser[DoublyLinkedList[T]] 
         rest = xnext
         count += 1
       else:
-        when defined(parserDebug):
-          echo green($internalDebug & ": Done repeatedly matching on " & input)
         if rest == input:
           var ret: Maybe[(DoublyLinkedList[T], string)]
           if atLeast == 0:
@@ -159,26 +138,14 @@ proc `/`*[T](lhs, rhs: Parser[T]): Parser[T] =
   ## Or operation. Takes two parser and returns a parser that will return
   ## the first matching parser.
   (proc (input: string): Maybe[(T, string)] =
-    when defined(parserDebug):
-      debug += 1
-      let internalDebug = debug
-      echo blue($internalDebug & ": Checking if either of two parsers match on " & input)
     let lresult = lhs(input)
     if lresult.hasValue:
-      when defined(parserDebug):
-        echo blue($internalDebug & ": First option matched on " & input)
       lresult
     else:
-      when defined(parserDebug):
-        echo blue($internalDebug & ": First option failed on " & input)
       let rresult = rhs(input)
       if rresult.hasValue:
-        when defined(parserDebug):
-          echo blue($internalDebug & ": Second option matched on " & input)
         rresult
       else:
-        when defined(parserDebug):
-          echo blue($internalDebug & ": Second option failed on " & input)
         Nothing[(T, string), (T, string)](lresult, rresult, "Either operation failed: Neither option matched", input)
   )
 
@@ -186,28 +153,18 @@ proc `+`*[T, U](lhs: Parser[T], rhs: Parser[U]): Parser[(T, U)] =
   ## And operation. Takes two parsers and returns a new parser with the tuple
   ## of the input parsers results. This only returns if both are true.
   (proc (input: string): Maybe[((T, U), string)] =
-    when defined(parserDebug):
-      debug += 1
-      let internalDebug = debug
-      echo yellow($internalDebug & ": Checking if both of two parsers match on " & input)
     let lresult = lhs(input)
     if lresult.hasValue:
       let (lvalue, lnext) = lresult.value
       let rresult = rhs(lnext)
       if rresult.hasValue:
         let (rvalue, rnext) = rresult.value
-        when defined(parserDebug):
-          echo yellow($internalDebug & ": Succesfully matched both on " & input)
         var ret = Just (((lvalue, rvalue), rnext))
         ret.errors = Error(kind: Branch, left: lresult.errors, right: rresult.errors)
         return ret
       else:
-        when defined(parserDebug):
-          echo yellow($internalDebug & ": Unable to match second on " & input)
         return Nothing[((T, U), string)](rresult, "Both operation failed: Unable to match second of two parsers", input)
     else:
-      when defined(parserDebug):
-        echo yellow($internalDebug & ": Unable to match first on " & input)
       return Nothing[((T, U), string)](lresult, "Both operation failed: Unable to match first of two parsers", input)
   )
 
@@ -215,19 +172,11 @@ proc map*[T, U](parser: Parser[T], f: (proc(value: T): U)): Parser[U] =
   ## Takes a parser and a function to converts it's type into another type and
   ## returns a parser that outputs the second type.
   (proc (input: string): Maybe[(U, string)] =
-    when defined(parserDebug):
-      debug += 1
-      let internalDebug = debug
-      echo cyan($internalDebug & ": Mapping a parser to another with input " & input)
     let xresult = parser(input)
     if xresult.hasValue:
       let (xvalue, xnext) = xresult.value
-      when defined(parserDebug):
-        echo cyan($internalDebug & ": Mapping succeded with input " & input)
       return Just[(U, string)](xresult,(f(xvalue), xnext))
     else:
-      when defined(parserDebug):
-        echo cyan($internalDebug & ": Mapping failed with input " & input)
       return Nothing[(U, string)](xresult, "Unable to map onto bad output", input)
   )
 
@@ -236,21 +185,13 @@ proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U
   ## is that while the above takes a converter from one type to another. This takes a converter
   ## from one type to a parser of another type.
   (proc (input: string): Maybe[(U, string)] =
-    when defined(parserDebug):
-      debug += 1
-      let internalDebug = debug
-      echo cyan($internalDebug & ": Flat-mapping a  parser to another with input " & input)
     let xresult = parser(input)
     if xresult.hasValue:
       let (xvalue, xnext) = xresult.value
-      when defined(parserDebug):
-        echo cyan($internalDebug & ": Flat-mapping succeded with input " & input)
       var ret = f(xvalue)(xnext)
       ret.errors = xresult.errors
       return ret
     else:
-      when defined(parserDebug):
-        echo cyan($internalDebug & ": Flat-mapping failed with input " & input)
       let ret = Nothing[(U, string)](xresult, "Unable to flat-map onto bad output", input)
       return ret
   )
