@@ -28,9 +28,9 @@ type
         leafError: string
     input: string
   Maybe*[T] = object
-    value: T
-    hasValue: bool
-    errors: Error
+    value*: T
+    hasValue*: bool
+    errors*: Error
   ParseError* = object of Exception
 
 proc Just*[T](value: T): Maybe[T] =
@@ -100,7 +100,7 @@ macro s*(value: string): Parser[string] =
   result = quote do:
     (proc (input: string): Maybe[(string, string)] =
       if input.startsWith(`value`):
-        Just ((input[0 .. (`value`.len - 1)], input[`value`.len .. input.len]))
+        Just((input[0 .. (`value`.len - 1)], input[`value`.len .. input.len]))
       else:
         Nothing[(string, string)](`pos` & ": Starts with operation failed: input did not start with \"" & `value` & "\"", input)
     )
@@ -165,7 +165,10 @@ proc `+`*[T, U](lhs: Parser[T], rhs: Parser[U]): Parser[(T, U)] =
       if rresult.hasValue:
         let (rvalue, rnext) = rresult.value
         var ret = Just(((lvalue, rvalue), rnext))
-        ret.errors = Error(kind: Branch, left: lresult.errors, right: rresult.errors)
+        #ret.errors = Error(kind: Branch, left: lresult.errors, right: rresult.errors, branchError: "Both operation succeded")
+        #var ret = Nothing[((T, U), string)](lresult, rresult, "Both operation sucedded", input)
+        #ret.hasValue = true
+        #ret.value = ((lvalue, rvalue), rnext)
         return ret
       else:
         return Nothing[((T, U), string)](rresult, "Both operation failed: Unable to match second of two parsers", input)
@@ -258,6 +261,9 @@ proc getError*[T](input: Maybe[T], original: string = nil): string =
           buildError(res, level + 1, node.right)
 
     buildError(result, 0, input.errors)
+
+proc `$`*[T](input: Maybe[T]): string =
+  getError(input)
 
 proc parse*[T](parser: Parser[T], input: string): T =
   let res = parser(input)
