@@ -13,9 +13,10 @@ import re
 import macros
 
 type
-  Parser*[T] = proc(input: string): Maybe[(T, string)]
+  Parser*[T, U] = proc(input: U): Maybe[(T, U), U]
+  StringParser*[T] = Parser[T, string]
   ErrorNodeKind = enum Branch, Leaf, Stem
-  Error = ref object
+  Error[T] = ref object
     case kind: ErrorNodeKind
       of Branch:
         left: Error
@@ -26,31 +27,31 @@ type
         stemError: string
       of Leaf:
         leafError: string
-    input: string
-  Maybe*[T] = object
+    input: T
+  Maybe*[T, U] = object
     value*: T
     hasValue*: bool
-    errors*: Error
+    errors*: Error[U]
   ParseError* = object of Exception
 
-proc Just*[T](value: T): Maybe[T] =
+proc Just*[T, U](value: T): Maybe[T, U] =
   result.hasValue = true
   result.value = value
   result.errors = nil
 
-proc Just*[T, U](old: Maybe[U], value: T): Maybe[T] =
+proc Just*[T, U, V](old: Maybe[U, V], value: T): Maybe[T, V] =
   result.hasValue = true
   result.value = value
   result.errors = old.errors
 
-proc Nothing*[T, U](old: Maybe[U], error: string, input: string): Maybe[T] =
+proc Nothing*[T, U, V](old: Maybe[U, V], error: string, input: V): Maybe[T, V] =
   result.hasValue = false
   if old.errors == nil:
     result.errors = Error(kind: Leaf, leafError: error, input: input)
   else:
     result.errors = Error(kind: Stem, stem: old.errors, stemError: error, input: input)
 
-proc Nothing*[T, U, V](left: Maybe[U], right: Maybe[V], error: string, input: string): Maybe[T] =
+proc Nothing*[T, U, V, W](left: Maybe[U, W], right: Maybe[V, W], error: string, input: W): Maybe[T, W] =
   result.hasValue = false
   if left.errors == nil and right.errors == nil:
     result.errors = Error(kind: Leaf, leafError: error, input: input)
@@ -62,15 +63,15 @@ proc Nothing*[T, U, V](left: Maybe[U], right: Maybe[V], error: string, input: st
     result.errors = Error(kind: Branch, left: left.errors, right: right.errors, branchError: error, input: input)
 
 
-proc Nothing*[T, U](old: Maybe[U]): Maybe[T] =
+proc Nothing*[T, U, V](old: Maybe[U, V]): Maybe[T, V] =
   result.hasValue = false
   result.errors = old.errors
 
-proc Nothing*[T](error: string, input: string): Maybe[T] =
+proc Nothing*[T, U](error: string, input: U): Maybe[T, U] =
   result.hasValue = false
   result.errors = Error(kind: Leaf, leafError: error, input: input)
 
-proc Something*[T, U](ret: var Maybe[T], first: Maybe[U], error: string, input: string) =
+proc Something*[T, U, V](ret: var Maybe[T, V], first: Maybe[U, V], error: string, input: V) =
   if first.errors == nil and ret.errors == nil:
     ret.errors = nil
   elif first.errors == nil:
@@ -80,7 +81,7 @@ proc Something*[T, U](ret: var Maybe[T], first: Maybe[U], error: string, input: 
   else:
     ret.errors = Error(kind: Branch, left: first.errors, right: ret.errors, branchError: error, input: input)
 
-macro regex*(regexStr: string): Parser[string] =
+macro regex*(regexStr: string): Parser[string, string] =
   ## Returns a parser that returns the string matched by the regex
   let pos = lineInfo(callsite())
   result = quote do:
@@ -93,7 +94,7 @@ macro regex*(regexStr: string): Parser[string] =
         Nothing[(string, string)](`pos` & ": Couldn't match regex \"" & `regexStr` & "\"", input)
     )
 
-macro s*(value: string): Parser[string] =
+macro s*(value: string): StringParser[string] =
   ## Start with parser. Returns a parser that matches if the input starts
   ## with the given string.
   let pos = lineInfo(callsite())
@@ -105,11 +106,11 @@ macro s*(value: string): Parser[string] =
         Nothing[(string, string)](`pos` & ": Starts with operation failed: input did not start with \"" & `value` & "\"", input)
     )
 
-proc repeat*[T](body: Parser[T], atLeast: int = 1): Parser[DoublyLinkedList[T]] =
+proc repeat*[T, U](body: Parser[T, U], atLeast: int = 1): Parser[DoublyLinkedList[T], U] =
   ## Returns a parser that returns a linked list of the input parsers type.
   ## Used to accept more multiple elements matching a pattern. If there is
   ## no match this will return an empty list and all the input as it's rest
-  (proc (input: string): Maybe[(DoublyLinkedList[T], string)] =
+  (proc (input: U): Maybe[(DoublyLinkedList[T], U)] =
     var
       list = initDoublyLinkedList[T]()
       rest = input
@@ -125,24 +126,24 @@ proc repeat*[T](body: Parser[T], atLeast: int = 1): Parser[DoublyLinkedList[T]] 
         count += 1
       else:
         if rest == input:
-          var ret: Maybe[(DoublyLinkedList[T], string)]
+          var ret: Maybe[(DoublyLinkedList[T], U)]
           if atLeast == 0:
-            ret = Just[(DoublyLinkedList[T], string)](xresult, (list, rest))
+            ret = Just[(DoublyLinkedList[T], U)](xresult, (list, rest))
           else:
-            ret = Nothing[(DoublyLinkedList[T], string)](xresult, "Repeat found zero matching elements", rest)
+            ret = Nothing[(DoublyLinkedList[T], U)](xresult, "Repeat found zero matching elements", rest)
           return ret
         else:
           if count >= atLeast:
-            return Just[(DoublyLinkedList[T], string)](xresult, (list, rest))
+            return Just[(DoublyLinkedList[T], U)](xresult, (list, rest))
           else:
-            return Nothing[(DoublyLinkedList[T], string)]("Not enough elements matched. Expected at least " & $atLeast & " but got only " & $count, rest)
+            return Nothing[(DoublyLinkedList[T], U)]("Not enough elements matched. Expected at least " & $atLeast & " but got only " & $count, rest)
     nil
   )
 
-proc `/`*[T](lhs, rhs: Parser[T]): Parser[T] =
+proc `/`*[T, U](lhs, rhs: Parser[T, U]): Parser[T, U] =
   ## Or operation. Takes two parser and returns a parser that will return
   ## the first matching parser.
-  (proc (input: string): Maybe[(T, string)] =
+  (proc (input: U): Maybe[(T, U)] =
     let lresult = lhs(input)
     if lresult.hasValue:
       lresult
@@ -151,7 +152,7 @@ proc `/`*[T](lhs, rhs: Parser[T]): Parser[T] =
       if rresult.hasValue:
         rresult
       else:
-        Nothing[(T, string), (T, string)](lresult, rresult, "Either operation failed: Neither option matched", input)
+        Nothing[(T, U), (T, U)](lresult, rresult, "Either operation failed: Neither option matched", input)
   )
 
 proc `+`*[T, U](lhs: Parser[T], rhs: Parser[U]): Parser[(T, U)] =
