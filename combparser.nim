@@ -19,11 +19,11 @@ type
   Error[T] = ref object
     case kind: ErrorNodeKind
       of Branch:
-        left: Error
-        right: Error
+        left: Error[T]
+        right: Error[T]
         branchError: string
       of Stem:
-        stem: Error
+        stem: Error[T]
         stemError: string
       of Leaf:
         leafError: string
@@ -47,21 +47,20 @@ proc Just*[T, U, V](old: Maybe[U, V], value: T): Maybe[T, V] =
 proc Nothing*[T, U, V](old: Maybe[U, V], error: string, input: V): Maybe[T, V] =
   result.hasValue = false
   if old.errors == nil:
-    result.errors = Error(kind: Leaf, leafError: error, input: input)
+    result.errors = Error[V](kind: Leaf, leafError: error, input: input)
   else:
-    result.errors = Error(kind: Stem, stem: old.errors, stemError: error, input: input)
+    result.errors = Error[V](kind: Stem, stem: old.errors, stemError: error, input: input)
 
 proc Nothing*[T, U, V, W](left: Maybe[U, W], right: Maybe[V, W], error: string, input: W): Maybe[T, W] =
   result.hasValue = false
   if left.errors == nil and right.errors == nil:
-    result.errors = Error(kind: Leaf, leafError: error, input: input)
+    result.errors = Error[W](kind: Leaf, leafError: error, input: input)
   elif left.errors == nil:
-    result.errors = Error(kind: Stem, stem: right.errors, stemError: error, input: input)
+    result.errors = Error[W](kind: Stem, stem: right.errors, stemError: error, input: input)
   elif right.errors == nil:
-    result.errors = Error(kind: Stem, stem: left.errors, stemError: error, input: input)
+    result.errors = Error[W](kind: Stem, stem: left.errors, stemError: error, input: input)
   else:
-    result.errors = Error(kind: Branch, left: left.errors, right: right.errors, branchError: error, input: input)
-
+    result.errors = Error[W](kind: Branch, left: left.errors, right: right.errors, branchError: error, input: input)
 
 proc Nothing*[T, U, V](old: Maybe[U, V]): Maybe[T, V] =
   result.hasValue = false
@@ -69,7 +68,7 @@ proc Nothing*[T, U, V](old: Maybe[U, V]): Maybe[T, V] =
 
 proc Nothing*[T, U](error: string, input: U): Maybe[T, U] =
   result.hasValue = false
-  result.errors = Error(kind: Leaf, leafError: error, input: input)
+  result.errors = Error[U](kind: Leaf, leafError: error, input: input)
 
 proc Something*[T, U, V](ret: var Maybe[T, V], first: Maybe[U, V], error: string, input: V) =
   if first.errors == nil and ret.errors == nil:
@@ -79,9 +78,9 @@ proc Something*[T, U, V](ret: var Maybe[T, V], first: Maybe[U, V], error: string
   elif ret.errors == nil:
     ret.errors = first.errors
   else:
-    ret.errors = Error(kind: Branch, left: first.errors, right: ret.errors, branchError: error, input: input)
+    ret.errors = Error[V](kind: Branch, left: first.errors, right: ret.errors, branchError: error, input: input)
 
-macro regex*(regexStr: string): Parser[string, string] =
+macro regex*(regexStr: string): untyped =# Parser[string, string] =
   ## Returns a parser that returns the string matched by the regex
   let pos = lineInfo(callsite())
   result = quote do:
@@ -94,56 +93,56 @@ macro regex*(regexStr: string): Parser[string, string] =
         Nothing[(string, string), string](`pos` & ": Couldn't match regex \"" & `regexStr` & "\"", input)
     )
 
-macro s*(value: string): StringParser[string] =
+macro s*(value: string): untyped = # StringParser[string] =
   ## Start with parser. Returns a parser that matches if the input starts
   ## with the given string.
   let pos = lineInfo(callsite())
   result = quote do:
-    (proc (input: string): Maybe[(string, string)] =
+    (proc (input: string): Maybe[(string, string), string] =
       if input.startsWith(`value`):
-        Just((input[0 .. (`value`.len - 1)], input[`value`.len .. input.len]))
+        Just[(string, string), string]((input[0 .. (`value`.len - 1)], input[`value`.len .. input.len]))
       else:
-        Nothing[(string, string)](`pos` & ": Starts with operation failed: input did not start with \"" & `value` & "\"", input)
+        Nothing[(string, string), string](`pos` & ": Starts with operation failed: input did not start with \"" & `value` & "\"", input)
     )
 
-proc repeat*[T, U](body: Parser[T, U], atLeast: int = 1): Parser[DoublyLinkedList[T], U] =
+proc repeat*[T, U](body: Parser[T, U], atLeast: int = 1): Parser[seq[T], U] =
   ## Returns a parser that returns a linked list of the input parsers type.
   ## Used to accept more multiple elements matching a pattern. If there is
   ## no match this will return an empty list and all the input as it's rest
-  (proc (input: U): Maybe[(DoublyLinkedList[T], U)] =
+  (proc (input: U): Maybe[(seq[T], U), U] =
     var
-      list = initDoublyLinkedList[T]()
+      list: seq[T] = @[]
       rest = input
       count = 0
     if input.len == 0 and atLeast == 0:
-      return Just((list, rest))
+      return Just[(seq[T], U), U]((list, rest))
     while true:
       let xresult = body(rest)
       if xresult.hasValue:
         let (xvalue, xnext) = xresult.value
-        list.append(xvalue)
+        list.add(xvalue)
         rest = xnext
         count += 1
       else:
         if rest == input:
-          var ret: Maybe[(DoublyLinkedList[T], U)]
+          var ret: Maybe[(seq[T], U), U]
           if atLeast == 0:
-            ret = Just[(DoublyLinkedList[T], U)](xresult, (list, rest))
+            ret = Just[(seq[T], U)](xresult, (list, rest))
           else:
-            ret = Nothing[(DoublyLinkedList[T], U)](xresult, "Repeat found zero matching elements", rest)
+            ret = Nothing[(seq[T], U)](xresult, "Repeat found zero matching elements", rest)
           return ret
         else:
           if count >= atLeast:
-            return Just[(DoublyLinkedList[T], U)](xresult, (list, rest))
+            return Just[(seq[T], U)](xresult, (list, rest))
           else:
-            return Nothing[(DoublyLinkedList[T], U)]("Not enough elements matched. Expected at least " & $atLeast & " but got only " & $count, rest)
+            return Nothing[(seq[T], U)]("Not enough elements matched. Expected at least " & $atLeast & " but got only " & $count, rest)
     nil
   )
 
 proc `/`*[T, U](lhs, rhs: Parser[T, U]): Parser[T, U] =
   ## Or operation. Takes two parser and returns a parser that will return
   ## the first matching parser.
-  (proc (input: U): Maybe[(T, U)] =
+  (proc (input: U): Maybe[(T, U), U] =
     let lresult = lhs(input)
     if lresult.hasValue:
       lresult
@@ -152,48 +151,48 @@ proc `/`*[T, U](lhs, rhs: Parser[T, U]): Parser[T, U] =
       if rresult.hasValue:
         rresult
       else:
-        Nothing[(T, U), (T, U)](lresult, rresult, "Either operation failed: Neither option matched", input)
+        Nothing[(T, U), (T, U), (T, U), U](lresult, rresult, "Either operation failed: Neither option matched", input)
   )
 
-proc `+`*[T, U](lhs: Parser[T], rhs: Parser[U]): Parser[(T, U)] =
+proc `+`*[T, U, V](lhs: Parser[T, V], rhs: Parser[U, V]): Parser[(T, U), V] =
   ## And operation. Takes two parsers and returns a new parser with the tuple
   ## of the input parsers results. This only returns if both are true.
-  (proc (input: string): Maybe[((T, U), string)] =
+  (proc (input: V): Maybe[((T, U), V), V] =
     let lresult = lhs(input)
     if lresult.hasValue:
       let (lvalue, lnext) = lresult.value
       let rresult = rhs(lnext)
       if rresult.hasValue:
         let (rvalue, rnext) = rresult.value
-        var ret = Just(((lvalue, rvalue), rnext))
+        var ret = Just[((T, U), V), V](((lvalue, rvalue), rnext))
         #ret.errors = Error(kind: Branch, left: lresult.errors, right: rresult.errors, branchError: "Both operation succeded")
         #var ret = Nothing[((T, U), string)](lresult, rresult, "Both operation sucedded", input)
         #ret.hasValue = true
         #ret.value = ((lvalue, rvalue), rnext)
         return ret
       else:
-        return Nothing[((T, U), string)](rresult, "Both operation failed: Unable to match second of two parsers", input)
+        return Nothing[((T, U), V)](rresult, "Both operation failed: Unable to match second of two parsers", input)
     else:
-      return Nothing[((T, U), string)](lresult, "Both operation failed: Unable to match first of two parsers", input)
+      return Nothing[((T, U), V)](lresult, "Both operation failed: Unable to match first of two parsers", input)
   )
 
-proc map*[T, U](parser: Parser[T], f: (proc(value: T): U)): Parser[U] =
+proc map*[T, U, V](parser: Parser[T, V], f: (proc(value: T): U)): Parser[U, V] =
   ## Takes a parser and a function to converts it's type into another type and
   ## returns a parser that outputs the second type.
-  (proc (input: string): Maybe[(U, string)] =
+  (proc (input: V): Maybe[(U, V), V] =
     let xresult = parser(input)
     if xresult.hasValue:
       let (xvalue, xnext) = xresult.value
-      return Just[(U, string)](xresult,(f(xvalue), xnext))
+      return Just[(U, V), (T, V)](xresult,(f(xvalue), xnext))
     else:
       return Nothing[(U, string)](xresult, "Unable to map onto bad output", input)
   )
 
-proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U] =
+proc flatMap*[T, U, V](parser: Parser[T, V], f: (proc(value: T): Parser[U, V])): Parser[U, V] =
   ## Similar to map this takes a parser and a function to make a conversion. The difference
   ## is that while the above takes a converter from one type to another. This takes a converter
   ## from one type to a parser of another type.
-  (proc (input: string): Maybe[(U, string)] =
+  (proc (input: V): Maybe[(U, V), V] =
     let xresult = parser(input)
     if xresult.hasValue:
       let (xvalue, xnext) = xresult.value
@@ -207,19 +206,19 @@ proc flatMap*[T, U](parser: Parser[T], f: (proc(value: T): Parser[U])): Parser[U
       return ret
   )
 
-proc chainl*[T](p: Parser[T], q: Parser[(proc(a: T, b: T): T)], allowEmpty = true): Parser[T] =
+proc chainl*[T, U](p: Parser[T, U], q: Parser[(proc(a: T, b: T): T), U], allowEmpty = true): Parser[T, U] =
   ## Takes two parsers, one that returns a type, and a second that takes an operator over that
   ## type. Returns a new parser that parses zero or more occurences of the type separated by
   ## the operator and applies the operator to the types in a left-associative manner.
-  (proc(input: string): Maybe[(T, string)] =
+  (proc(input: U): Maybe[(T, U), U] =
     let
       first = p(input)
       (firstVal, rest) = first.value
     if not first.hasValue:
-      return Nothing[(T, string), (T, string)](first, "Chainl operation failed: First value not matching", input)
+      return Nothing[(T, U), (T, U)](first, "Chainl operation failed: First value not matching", input)
     if rest.len == 0:
       return first
-    var ret = (q + p).repeat(if allowEmpty: 0 else: 1).map(proc(values: DoublyLinkedList[((proc(a: T, b: T): T), T)]): T =
+    var ret = (q + p).repeat(if allowEmpty: 0 else: 1).map(proc(values: seq[((proc(a: T, b: T): T), T)]): T =
       let xs = values
       var a = firstVal
       for fb in xs:
@@ -230,15 +229,15 @@ proc chainl*[T](p: Parser[T], q: Parser[(proc(a: T, b: T): T)], allowEmpty = tru
     return ret
   )
 
-template chainl1*[T](p: Parser[T], q: Parser[(proc(a: T, b: T): T)]): Parser[T] =
+template chainl1*[T, U](p: Parser[T, U], q: Parser[(proc(a: T, b: T): T), U]): Parser[T, U] =
   ## Same as the chainl operator but it requires at least one round of operations if there is
   ## sufficient amount of input for it.
   chainl(p, q, false)
 
-proc getError*[T](input: Maybe[T], original: string = nil): string =
+proc getError*[T](input: Maybe[T, string], original: string = nil): string =
   result = ""
   if input.errors != nil:
-    proc buildError(res: var string, level: int, node: Error) =
+    proc buildError(res: var string, level: int, node: Error, original: string) =
       case node.kind:
         of Leaf:
           if original != nil:
@@ -255,18 +254,18 @@ proc getError*[T](input: Maybe[T], original: string = nil): string =
             res = res & "  ".repeat(level) & node.leafError & " on input \"" & node.input[0..<(node.input.find("\n"))] & "\"\n"
         of Stem:
           res = res & "  ".repeat(level) & node.stemError & " on input \"" & node.input[0..<(node.input.find("\n"))] & "\"\n"
-          buildError(res, level + 1, node.stem)
+          buildError(res, level + 1, node.stem, original)
         of Branch:
           res = res & "  ".repeat(level) & node.branchError & "\n"
-          buildError(res, level + 1, node.left)
-          buildError(res, level + 1, node.right)
+          buildError(res, level + 1, node.left, original)
+          buildError(res, level + 1, node.right, original)
 
-    buildError(result, 0, input.errors)
+    buildError(result, 0, input.errors, original)
 
-proc `$`*[T](input: Maybe[T]): string =
+proc `$`*[T](input: Maybe[T, string]): string =
   getError(input)
 
-proc parse*[T](parser: Parser[T], input: string): T =
+proc parse*[T](parser: Parser[T, string], input: string): T =
   let res = parser(input)
   if res.hasValue and (res.value[1] == "" or res.errors == nil):
     return res.value[0]
@@ -292,66 +291,66 @@ when isMainModule:
       of Operator:
         "Operator(" & $tree.left & " " & tree.operator & " " & $tree.right & ")"
 
-  proc number(): Parser[int]
+  proc number(): Parser[int, string]
 
-  proc Addition(): Parser[Node]
+  proc Addition(): StringParser[Node]
 
-  proc Multiplication(): Parser[Node]
+  proc Multiplication(): StringParser[Node]
 
-  proc Parenthesis(): Parser[Node]
+  proc Parenthesis(): StringParser[Node]
 
-  proc Expression(): Parser[Node] = Addition()
+  proc Expression(): StringParser[Node] = Addition()
 
-  proc Addition(): Parser[Node] = Multiplication().chainl(
+  proc Addition(): StringParser[Node] = Multiplication().chainl(
     (s("+").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
     (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "+", left: lhs, right: rhs)))) /
     (s("-").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
     (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "-", left: lhs, right: rhs))))
   )
 
-  proc Multiplication(): Parser[Node] = Parenthesis().chainl(
+  proc Multiplication(): StringParser[Node] = Parenthesis().chainl(
     (s("*").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
       (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "*", left: lhs, right: rhs)))) /
     (s("/").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
       (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "/", left: lhs, right: rhs))))
   )
 
-  proc Parenthesis(): Parser[Node] =
-    regex(r"\s*\(\s*").flatMap(proc(_: string): Parser[Node] =
-      Expression().flatMap(proc(e: Node): Parser[Node] =
+  proc Parenthesis(): StringParser[Node] =
+    regex(r"\s*\(\s*").flatMap(proc(_: string): StringParser[Node] =
+      Expression().flatMap(proc(e: Node): StringParser[Node] =
         regex(r"\s*\)\s*").map(proc(_: string): Node =
           e))) / number().map(proc(val: int): Node =
             Node(kind: Value, value: val))
 
-  proc A(): Parser[int]
+  proc A(): StringParser[int]
 
-  proc M(): Parser[int]
+  proc M(): StringParser[int]
 
-  proc P(): Parser[int]
+  proc P(): StringParser[int]
 
-  proc E(): Parser[int] = A()
+  proc E(): StringParser[int] = A()
 
-  proc A(): Parser[int] = M().chainl1(
+  proc A(): StringParser[int] = M().chainl1(
     (s("+").map(proc(_: string): (proc(lhs: int, rhs: int): int) =
       (proc(lhs: int, rhs: int): int = lhs + rhs))) /
     (s("-").map(proc(_: string): (proc(lhs: int, rhs: int): int) =
       (proc(lhs: int, rhs: int): int = lhs - rhs)))
   )
 
-  proc M(): Parser[int] = P().chainl(
+  proc M(): StringParser[int] = P().chainl(
     (s("*").map(proc(_: string): (proc(lhs: int, rhs: int): int) =
       (proc(lhs: int, rhs: int): int = lhs * rhs))) /
     (s("/").map(proc(_: string): (proc(lhs: int, rhs: int): int) =
       (proc(lhs: int, rhs: int): int = lhs div rhs)))
   )
 
-  proc P(): Parser[int] =
-    regex(r"\s*\(\s*").flatMap(proc(_: string): Parser[int] =
-      E().flatMap(proc(e: int): Parser[int] =
+  proc P(): StringParser[int] =
+    regex(r"\s*\(\s*").flatMap(proc(_: string): StringParser[int] =
+      E().flatMap(proc(e: int): StringParser[int] =
         regex(r"\s*\)\s*").map(proc(_: string): int =
           e))) / number()
 
-  proc number(): Parser[int] = regex(r"\s*[0-9]+\s*").map(proc(n: string): int =
+  proc number(): Parser[int, string] = regex(r"\s*[0-9]+\s*").map(proc(n: string): int =
     parseInt(n.strip()))
 
   echo parse(Expression(), "( 1 + 2 )  *   ( 3 + 4 )")
@@ -360,7 +359,7 @@ when isMainModule:
   echo "-----------------------------------------"
   #echo parse(Expression(), "1 + 2  *  3 + 4 Hello world")
   echo "-----------------------------------------"
-  var res: Maybe[(int, string)]
+  var res: Maybe[(int, string), string]
   res = E()("( 1 + 2 )  *   ( 3 + 4 )  Hello world")
   if res.hasValue:
     echo res
