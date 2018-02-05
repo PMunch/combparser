@@ -80,6 +80,23 @@ proc Something*[T, U, V](ret: var Maybe[T, V], first: Maybe[U, V], error: string
   else:
     ret.errors = Error[V](kind: Branch, left: first.errors, right: ret.errors, branchError: error, input: input)
 
+macro nodeKind*(kind: NimNodeKind): untyped =
+  let pos = lineInfo(callsite())
+  result = quote do:
+    (proc (input: seq[NimNode]): Maybe[(NimNode, seq[NimNode]), seq[NimNode]] =
+      if input[0].kind == `kind`:
+#input[0].sons.concat
+        var
+          rest = newSeq[NimNode](input[0].len)
+          i = 0
+        for child in input[0].children:
+          rest[i] = child
+          i += 1
+        Just[(NimNode, seq[NimNode]), seq[NimNode]]((input[0], rest))
+      else:
+        Nothing[(NimNode, seq[NimNode]), seq[NimNode]](`pos` & ": Couldn't match node kind \"" & "" & "\"", input)
+    )
+
 macro regex*(regexStr: string): untyped =# Parser[string, string] =
   ## Returns a parser that returns the string matched by the regex
   let pos = lineInfo(callsite())
@@ -386,4 +403,22 @@ when isMainModule:
   echo "-----------------------------------------"
   echo parse(E(), "1 + 5")
   echo "-----------------------------------------"
-  echo parse(E(), "1 + ")
+  #echo parse(E(), "1 + ")
+  macro testMacro(t: untyped): untyped =
+    echo t.treeRepr
+    let ret = (nodeKind(nnkStmtList) + nodeKind(nnkCommand).repeat())(@[t])
+    if ret.hasValue:
+      echo ret.value[0][0].treeRepr
+      echo "List:"
+      for i in ret.value[0][1]:
+        echo i.treeRepr.indent(1, "  ")
+      echo "Rest:"
+      for i in ret.value[1]:
+        echo i.treeRepr.indent(1, "  ")
+    else:
+      echo "Error!"
+    return newStmtList()
+
+  testMacro:
+    echo "Hello"
+    echo "world"
