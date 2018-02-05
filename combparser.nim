@@ -85,13 +85,13 @@ macro regex*(regexStr: string): Parser[string, string] =
   ## Returns a parser that returns the string matched by the regex
   let pos = lineInfo(callsite())
   result = quote do:
-    (proc (input: string): Maybe[(string, string)] =
+    (proc (input: string): Maybe[(string, string), string] =
       let regex = re(`regexStr`)
       let (first, last) = findBounds(input, regex)
       if first == 0:
-        Just((input[0 .. last], input[(last + 1) .. input.len]))
+        Just[(string, string), string]((input[0 .. last], input[(last + 1) .. input.len]))
       else:
-        Nothing[(string, string)](`pos` & ": Couldn't match regex \"" & `regexStr` & "\"", input)
+        Nothing[(string, string), string](`pos` & ": Couldn't match regex \"" & `regexStr` & "\"", input)
     )
 
 macro s*(value: string): StringParser[string] =
