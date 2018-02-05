@@ -164,7 +164,7 @@ proc `+`*[T, U](lhs: Parser[T], rhs: Parser[U]): Parser[(T, U)] =
       let rresult = rhs(lnext)
       if rresult.hasValue:
         let (rvalue, rnext) = rresult.value
-        var ret = Just (((lvalue, rvalue), rnext))
+        var ret = Just(((lvalue, rvalue), rnext))
         ret.errors = Error(kind: Branch, left: lresult.errors, right: rresult.errors)
         return ret
       else:
@@ -286,7 +286,7 @@ when isMainModule:
         "Operator(" & $tree.left & " " & tree.operator & " " & $tree.right & ")"
 
   proc number(): Parser[int]
-  
+
   proc Addition(): Parser[Node]
 
   proc Multiplication(): Parser[Node]
