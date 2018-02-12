@@ -122,6 +122,16 @@ macro s*(value: string): untyped = # StringParser[string] =
         Nothing[(string, string), string](`pos` & ": Starts with operation failed: input did not start with \"" & `value` & "\"", input)
     )
 
+proc optional*[T, U](parser: Parser[T, U]): Parser[T, U] =
+  (proc (input: U): Maybe[(T, U), U] =
+    result = parser(input)
+    if not result.hasValue:
+      result.value[1] = input
+    result.hasValue = true
+    result.errors = nil
+  )
+
+
 proc repeat*[T, U](body: Parser[T, U], atLeast: int = 1): Parser[seq[T], U] =
   ## Returns a parser that returns a linked list of the input parsers type.
   ## Used to accept more multiple elements matching a pattern. If there is
@@ -257,7 +267,7 @@ proc getError*[T](input: Maybe[T, string], original: string = nil): string =
     proc buildError(res: var string, level: int, node: Error, original: string) =
       case node.kind:
         of Leaf:
-          if original != nil:
+          if original != nil and node.input != nil:
             let
               pos = original.rfind(node.input)
               startStr = original[0..<pos]
@@ -268,9 +278,15 @@ proc getError*[T](input: Maybe[T, string], original: string = nil): string =
             res = res & newLine & startLine & endStr & "\"\n"
             res = res & " ".repeat(newLine.len + startLine.len) & "^\n"
           else:
-            res = res & "  ".repeat(level) & node.leafError & " on input \"" & node.input[0..<(node.input.find("\n"))] & "\"\n"
+            if node.input == nil:
+              res = res & "  ".repeat(level) & node.leafError & " on input nil\n"
+            else:
+              res = res & "  ".repeat(level) & node.leafError & " on input \"" & node.input[0..<(node.input.find("\n"))] & "\"\n"
         of Stem:
-          res = res & "  ".repeat(level) & node.stemError & " on input \"" & node.input[0..<(node.input.find("\n"))] & "\"\n"
+          if node.input == nil:
+            res = res & "  ".repeat(level) & node.stemError & " on input nil\n"
+          else:
+            res = res & "  ".repeat(level) & node.stemError & " on input \"" & node.input[0..<(node.input.find("\n"))] & "\"\n"
           buildError(res, level + 1, node.stem, original)
         of Branch:
           res = res & "  ".repeat(level) & node.branchError & "\n"
