@@ -15,19 +15,19 @@ import macros
 type
   Parser*[T, U] = proc(input: U): Maybe[(T, U), U]
   StringParser*[T] = Parser[T, string]
-  ErrorNodeKind = enum Branch, Leaf, Stem
-  Error[T] = ref object
-    case kind: ErrorNodeKind
+  ErrorNodeKind* = enum Branch, Leaf, Stem
+  Error*[T] = ref object
+    case kind*: ErrorNodeKind
       of Branch:
-        left: Error[T]
-        right: Error[T]
-        branchError: string
+        left*: Error[T]
+        right*: Error[T]
+        branchError*: string
       of Stem:
-        stem: Error[T]
-        stemError: string
+        stem*: Error[T]
+        stemError*: string
       of Leaf:
-        leafError: string
-    input: T
+        leafError*: string
+    input*: T
   Maybe*[T, U] = object
     value*: T
     hasValue*: bool
@@ -105,7 +105,7 @@ macro regex*(regexStr: string): untyped =# Parser[string, string] =
       let regex = re(`regexStr`)
       let (first, last) = findBounds(input, regex)
       if first == 0:
-        Just[(string, string), string]((input[0 .. last], input[(last + 1) .. input.len]))
+        Just[(string, string), string]((input[0 .. last], input[(last + 1) .. input.high]))
       else:
         Nothing[(string, string), string](`pos` & ": Couldn't match regex \"" & `regexStr` & "\"", input)
     )
@@ -117,7 +117,7 @@ macro s*(value: string): untyped = # StringParser[string] =
   result = quote do:
     (proc (input: string): Maybe[(string, string), string] =
       if input.startsWith(`value`):
-        Just[(string, string), string]((input[0 .. (`value`.len - 1)], input[`value`.len .. input.len]))
+        Just[(string, string), string]((input[0 .. (`value`.len - 1)], input[`value`.len .. input.high]))
       else:
         Nothing[(string, string), string](`pos` & ": Starts with operation failed: input did not start with \"" & `value` & "\"", input)
     )
@@ -264,7 +264,7 @@ template chainl1*[T, U](p: Parser[T, U], q: Parser[(proc(a: T, b: T): T), U]): P
 proc getError*[T](input: Maybe[T, string], original: string = nil): string =
   result = ""
   if input.errors != nil:
-    proc buildError(res: var string, level: int, node: Error, original: string) =
+    proc buildError(res: var string, level: int, node: Error[string], original: string) =
       case node.kind:
         of Leaf:
           if original != nil and node.input != nil:
@@ -281,12 +281,12 @@ proc getError*[T](input: Maybe[T, string], original: string = nil): string =
             if node.input == nil:
               res = res & "  ".repeat(level) & node.leafError & " on input nil\n"
             else:
-              res = res & "  ".repeat(level) & node.leafError & " on input \"" & node.input[0..<(node.input.find("\n"))] & "\"\n"
+              res = res & "  ".repeat(level) & node.leafError & " on input \"" & node.input[0..<(max(node.input.find("\n"), node.input.len))] & "\"\n"
         of Stem:
           if node.input == nil:
             res = res & "  ".repeat(level) & node.stemError & " on input nil\n"
           else:
-            res = res & "  ".repeat(level) & node.stemError & " on input \"" & node.input[0..<(node.input.find("\n"))] & "\"\n"
+            res = res & "  ".repeat(level) & node.stemError & " on input \"" & node.input[0..<(max(node.input.find("\n"), node.input.len))] & "\"\n"
           buildError(res, level + 1, node.stem, original)
         of Branch:
           res = res & "  ".repeat(level) & node.branchError & "\n"
