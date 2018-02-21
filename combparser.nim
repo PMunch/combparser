@@ -34,6 +34,21 @@ type
     errors*: Error[U]
   ParseError* = object of Exception
 
+proc Return*[T, W](input: W, rest: W, value: T, newerr: string, lefterr, righterr: Error[W] = nil): Maybe[(T, W), W] =
+  result.hasValue = value != nil
+  result.value = (value, rest)
+  if lefterr == nil and righterr == nil:
+    if rest != nil or (when rest is string: rest.len != 0 else: false):
+      result.errors = Error[W](kind: Leaf, leafError: newerr, input: input)
+    else:
+      result.errors = nil
+  elif lefterr == nil:
+    result.errors = Error[W](kind: Stem, stem: righterr, stemError: newerr, input: input)
+  elif righterr == nil:
+    result.errors = Error[W](kind: Stem, stem: lefterr, stemError: newerr, input: input)
+  else:
+    result.errors = Error[W](kind: Branch, left: lefterr, right: righterr, branchError: newerr, input: input)
+
 proc Just*[T, U](value: T): Maybe[T, U] =
   result.hasValue = true
   result.value = value
@@ -122,7 +137,7 @@ macro s*(value: string): untyped = # StringParser[string] =
         Nothing[(string, string), string](`pos` & ": Starts with operation failed: input did not start with \"" & `value` & "\"", input)
     )
 
-macro charmatch(charset: set[char]): untyped =
+macro charmatch*(charset: set[char]): untyped =
   ## Mathes repeatedly against any character in the set
   let pos = lineInfo(callsite())
   result = quote do:
@@ -137,7 +152,7 @@ macro charmatch(charset: set[char]): untyped =
         Nothing[(string, string), string](`pos` & ": Couldn't match characters \"" & (if `charset` == Whitespace: "Whitespace" else: $`charset`) & "\"", input)
     )
 
-macro allbut(but: string): untyped =
+macro allbut*(but: string): untyped =
   ## Matches anything up to `but`.
   let pos = lineInfo(callsite())
   result = quote do:
