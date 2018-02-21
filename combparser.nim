@@ -261,6 +261,12 @@ template chainl1*[T, U](p: Parser[T, U], q: Parser[(proc(a: T, b: T): T), U]): P
   ## sufficient amount of input for it.
   chainl(p, q, false)
 
+proc pos(first, second: int): int =
+  if first >= 0:
+    first
+  else:
+    second
+
 proc getError*[T](input: Maybe[T, string], original: string = nil): string =
   result = ""
   if input.errors != nil:
@@ -281,12 +287,12 @@ proc getError*[T](input: Maybe[T, string], original: string = nil): string =
             if node.input == nil:
               res = res & "  ".repeat(level) & node.leafError & " on input nil\n"
             else:
-              res = res & "  ".repeat(level) & node.leafError & " on input \"" & node.input[0..<(max(node.input.find("\n"), node.input.len))] & "\"\n"
+              res = res & "  ".repeat(level) & node.leafError & " on input \"" & node.input[0..<(pos(node.input.find("\n"), node.input.len))] & "\"\n"
         of Stem:
           if node.input == nil:
             res = res & "  ".repeat(level) & node.stemError & " on input nil\n"
           else:
-            res = res & "  ".repeat(level) & node.stemError & " on input \"" & node.input[0..<(max(node.input.find("\n"), node.input.len))] & "\"\n"
+            res = res & "  ".repeat(level) & node.stemError & " on input \"" & node.input[0..<(pos(node.input.find("\n"), node.input.len))] & "\"\n"
           buildError(res, level + 1, node.stem, original)
         of Branch:
           res = res & "  ".repeat(level) & node.branchError & "\n"
