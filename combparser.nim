@@ -122,7 +122,39 @@ macro s*(value: string): untyped = # StringParser[string] =
         Nothing[(string, string), string](`pos` & ": Starts with operation failed: input did not start with \"" & `value` & "\"", input)
     )
 
+macro charmatch(charset: set[char]): untyped =
+  ## Mathes repeatedly against any character in the set
+  let pos = lineInfo(callsite())
+  result = quote do:
+    (proc (input: string): Maybe[(string, string), string] =
+      var pos = 0
+      for c in input:
+        if c in `charset`: pos += 1
+        else: break
+      if pos > 0:
+        Just[(string, string), string]((input[0 .. pos-1], input[pos .. input.len]))
+      else:
+        Nothing[(string, string), string](`pos` & ": Couldn't match characters \"" & (if `charset` == Whitespace: "Whitespace" else: $`charset`) & "\"", input)
+    )
+
+macro allbut(but: string): untyped =
+  ## Matches anything up to `but`.
+  let pos = lineInfo(callsite())
+  result = quote do:
+    (proc (input: string): Maybe[(string, string), string] =
+      var pos = input.find(`but`)
+      if pos == -1:
+        pos = input.len
+      if pos > 0:
+        Just[(string, string), string]((input[0 .. pos-1], input[pos .. input.len]))
+      else:
+        Nothing[(string, string), string](`pos` & ": All-but \"" & `but` & "\" failed", input)
+    )
+
 proc optional*[T, U](parser: Parser[T, U]): Parser[T, U] =
+  ## An optional wrapper, will remove any error from the parser and pretend it has
+  ## a value if it doesn't already have one. This means that the value is left
+  ## uninitialised and much be handled accordingly.
   (proc (input: U): Maybe[(T, U), U] =
     result = parser(input)
     if not result.hasValue:
@@ -268,6 +300,8 @@ proc pos(first, second: int): int =
     second
 
 proc getError*[T](input: Maybe[T, string], original: string = nil): string =
+  ## Will generate an error message from the given input. If original is supplied
+  ## it will be used to show where in the input the error occured.
   result = ""
   if input.errors != nil:
     proc buildError(res: var string, level: int, node: Error[string], original: string) =
@@ -300,6 +334,30 @@ proc getError*[T](input: Maybe[T, string], original: string = nil): string =
           buildError(res, level + 1, node.right, original)
 
     buildError(result, 0, input.errors, original)
+
+proc onerror*[T, U](parser: Parser[T, U], message: string, wrap = false): Parser[T, U] =
+  ## Changes the error message of a parser. This way custom errors can be created for
+  ## matchers. If the wrap flag is set to true, the message will be inserted as a
+  ## parent of all underlying errors. Otherwise it will replace them.
+  (proc (input: U): Maybe[(T, U), U] =
+    result = parser(input)
+    if not result.hasValue:
+      if wrap == false:
+        result.errors = Error[U](kind: Leaf, leafError: message, input: input)
+      else:
+        result.errors = Error[U](kind: Stem, stemError: message, stem: result.errors, input: input)
+  )
+
+macro raisehere*[T, U](parser: Parser[T, U], original: string = nil): untyped =
+  ## For help with debugging or to achieve early termination. Will raise any
+  ## error immediately if parser has no result, otherwise it does nothing.
+  let pos = lineInfo(callsite())
+  result = quote do:
+    (proc (input: U): Maybe[(T, U), U] =
+      result = parser(input)
+      if not result.hasValue:
+        raise newException(ParseError, `pos` & ": Unable to parse:\n" & getError(result, original).indent(2) & "\n")
+    )
 
 proc `$`*[T](input: Maybe[T, string]): string =
   getError(input)
