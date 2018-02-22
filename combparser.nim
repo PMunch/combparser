@@ -38,7 +38,7 @@ proc Return*[T, W](input: W, rest: W, value: T, newerr: string, lefterr, righter
   result.hasValue = value != nil
   result.value = (value, rest)
   if lefterr == nil and righterr == nil:
-    if rest != nil or (when rest is string: rest.len != 0 else: false):
+    if rest != nil and (when rest is string: rest.len != 0 else: true):
       result.errors = Error[W](kind: Leaf, leafError: newerr, input: input)
     else:
       result.errors = nil
@@ -119,10 +119,12 @@ macro regex*(regexStr: string): untyped =# Parser[string, string] =
     (proc (input: string): Maybe[(string, string), string] =
       let regex = re(`regexStr`)
       let (first, last) = findBounds(input, regex)
-      if first == 0:
-        Just[(string, string), string]((input[0 .. last], input[(last + 1) .. input.high]))
-      else:
-        Nothing[(string, string), string](`pos` & ": Couldn't match regex \"" & `regexStr` & "\"", input)
+      Return(
+        input = input,
+        rest = input[(last+1) .. input.high],
+        value = if first == 0: input[0 .. last] else: nil,
+        newerr = `pos` & ": Regex parser couldn't match " & (if first == 0: "more than " & $last & " characters" else: "any characters") & " on regex " & `regexStr`,
+      )
     )
 
 macro s*(value: string): untyped = # StringParser[string] =
@@ -131,10 +133,12 @@ macro s*(value: string): untyped = # StringParser[string] =
   let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: string): Maybe[(string, string), string] =
-      if input.startsWith(`value`):
-        Just[(string, string), string]((input[0 .. (`value`.len - 1)], input[`value`.len .. input.high]))
-      else:
-        Nothing[(string, string), string](`pos` & ": Starts with operation failed: input did not start with \"" & `value` & "\"", input)
+      Return(
+        input = input,
+        rest = input[`value`.len .. input.high],
+        value = if input.startsWith(`value`): input[0 .. (`value`.len - 1)] else: nil,
+        newerr = `pos` & ": Starts with parser couldn't match " & (if not input.startsWith(`value`): "as string didn't start with \"" & `value` & "\"" else: "full length of the string"),
+      )
     )
 
 macro charmatch*(charset: set[char]): untyped =
@@ -146,10 +150,12 @@ macro charmatch*(charset: set[char]): untyped =
       for c in input:
         if c in `charset`: pos += 1
         else: break
-      if pos > 0:
-        Just[(string, string), string]((input[0 .. pos-1], input[pos .. input.len]))
-      else:
-        Nothing[(string, string), string](`pos` & ": Couldn't match characters \"" & (if `charset` == Whitespace: "Whitespace" else: $`charset`) & "\"", input)
+      Return(
+        input = input,
+        rest = input[pos .. input.high],
+        value = if pos > 0: input[0 .. pos-1] else: nil,
+        newerr = `pos` & ": Character set parser couldn't match " & (if pos > 0: "more than " & $pos & " characters" else: "any characters") & " with the charset " & repr(`charset`),
+      )
     )
 
 macro allbut*(but: string): untyped =
@@ -225,7 +231,14 @@ proc `/`*[T, U](lhs, rhs: Parser[T, U]): Parser[T, U] =
       if rresult.hasValue:
         rresult
       else:
-        Nothing[(T, U), (T, U), (T, U), U](lresult, rresult, "Either operation failed: Neither option matched", input)
+        Return[string, string](
+          input = input,
+          rest = input,
+          value = nil,
+          newerr = "Either operation failed: neither operation matched",
+          lefterr = lresult.errors,
+          righterr = rresult.errors
+        )
   )
 
 proc `+`*[T, U, V](lhs: Parser[T, V], rhs: Parser[U, V]): Parser[(T, U), V] =
@@ -349,6 +362,7 @@ proc getError*[T](input: Maybe[T, string], original: string = nil): string =
           buildError(res, level + 1, node.right, original)
 
     buildError(result, 0, input.errors, original)
+    result = result[0..result.high-1]
 
 proc onerror*[T, U](parser: Parser[T, U], message: string, wrap = false): Parser[T, U] =
   ## Changes the error message of a parser. This way custom errors can be created for
@@ -375,7 +389,10 @@ macro raisehere*[T, U](parser: Parser[T, U], original: string = nil): untyped =
     )
 
 proc `$`*[T](input: Maybe[T, string]): string =
-  getError(input)
+  if input.errors != nil:
+    getError(input)
+  else:
+    $input.value
 
 proc parse*[T](parser: Parser[T, string], input: string): T =
   let res = parser(input)
@@ -385,6 +402,27 @@ proc parse*[T](parser: Parser[T, string], input: string): T =
     raise newException(ParseError, "Unable to parse:\n" & getError(res, input).indent(2) & "\n")
 
 when isMainModule:
+  template echoParse(parser: untyped, input: untyped, name: string): untyped =
+    let r1 = parser(input)
+    echo if r1.hasValue: name & " has value" else: name & " doesn't have a value"
+    if r1.hasValue:
+      echo r1.value[0]
+      if r1.value[1].len == 0:
+        echo "all consumed"
+      else:
+        echo "remaining characters: " & $r1.value[1].len
+    echo if r1.errors == nil: name & " doesn't have errors" else: name & " has errors:\n" & r1.getError
+    echo ""
+
+  echoParse(charmatch({'0'..'9'}), "123;", "r1")
+  echoParse(charmatch({'0'..'9'}) + s(";"), "123;", "r2")
+  echoParse(charmatch({'0'..'9'}) + s(";"), "123 ;", "r3")
+  echoParse(s("hello"), "hello", "r4")
+  echoParse(s("hello"), "hello world", "r5")
+  echoParse(s("hello") / s("world"), "world", "r6")
+  echoParse(s("hello") / s("world"), "worlds", "r7")
+
+when false:# isMainModule:
   type
     NodeKind = enum Operator, Value
     Node = ref object
