@@ -142,7 +142,7 @@ macro s*(value: string): untyped = # StringParser[string] =
     )
 
 macro charmatch*(charset: set[char]): untyped =
-  ## Mathes repeatedly against any character in the set
+  ## Matches repeatedly against any character in the set
   let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: string): Maybe[(string, string), string] =
@@ -166,10 +166,12 @@ macro allbut*(but: string): untyped =
       var pos = input.find(`but`)
       if pos == -1:
         pos = input.len
-      if pos > 0:
-        Just[(string, string), string]((input[0 .. pos-1], input[pos .. input.len]))
-      else:
-        Nothing[(string, string), string](`pos` & ": All-but \"" & `but` & "\" failed", input)
+      Return(
+        input = input,
+        rest = input[pos .. input.high],
+        value = if pos > 0: input[0 .. pos-1] else: nil,
+        newerr = `pos` & ": All-but parser couldn't match " & (if pos > 0: "more than " & $pos & " characters" else: "any characters") & " stopping at " & `but`,
+      )
     )
 
 proc optional*[T, U](parser: Parser[T, U]): Parser[T, U] =
@@ -204,18 +206,13 @@ proc repeat*[T, U](body: Parser[T, U], atLeast: int = 1): Parser[seq[T], U] =
         rest = xnext
         count += 1
       else:
-        if rest == input:
-          var ret: Maybe[(seq[T], U), U]
-          if atLeast == 0:
-            ret = Just[(seq[T], U)](xresult, (list, rest))
-          else:
-            ret = Nothing[(seq[T], U)](xresult, "Repeat found zero matching elements", rest)
-          return ret
-        else:
-          if count >= atLeast:
-            return Just[(seq[T], U)](xresult, (list, rest))
-          else:
-            return Nothing[(seq[T], U)]("Not enough elements matched. Expected at least " & $atLeast & " but got only " & $count, rest)
+        return Return(
+          input = input,
+          rest = rest,
+          value = if count >= atLeast: list else: nil,
+          newerr = "Repeat operation failed: " & (if count < atLeast: "Not enough elements matched. Expected at least " & $atLeast & " but got only " & $count else: "Unable to match entire input"),
+          lefterr = xresult.errors
+        )
     nil
   )
 
@@ -225,11 +222,23 @@ proc `/`*[T, U](lhs, rhs: Parser[T, U]): Parser[T, U] =
   (proc (input: U): Maybe[(T, U), U] =
     let lresult = lhs(input)
     if lresult.hasValue:
-      lresult
+      Return[string, string](
+        input = input,
+        rest = lresult.value[1],
+        value = lresult.value[0],
+        newerr = "Either operation failed: didn't match entire input",
+        lefterr = lresult.errors
+      )
     else:
       let rresult = rhs(input)
       if rresult.hasValue:
-        rresult
+        Return[string, string](
+          input = input,
+          rest = rresult.value[1],
+          value = rresult.value[0],
+          newerr = "Either operation failed: didn't match entire input",
+          lefterr = rresult.errors
+        )
       else:
         Return[string, string](
           input = input,
@@ -421,6 +430,11 @@ when isMainModule:
   echoParse(s("hello"), "hello world", "r5")
   echoParse(s("hello") / s("world"), "world", "r6")
   echoParse(s("hello") / s("world"), "worlds", "r7")
+  echoParse(allbut("world"), "hello there", "r8")
+  echoParse(allbut("world"), "hello world", "r9")
+  echoParse(repeat(s("world")), "worldworldworld", "r10")
+  echoParse(repeat(s("world")), "worldworldworldhello", "r11")
+  echoParse(repeat(s("world"), atLeast = 4), "worldworldworld", "r12")
 
 when false:# isMainModule:
   type
