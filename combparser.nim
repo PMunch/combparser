@@ -34,20 +34,20 @@ type
     errors*: Error[U]
   ParseError* = object of Exception
 
-proc Return*[T, W](input: W, rest: W, value: T, newerr: string, lefterr, righterr: Error[W] = nil): Maybe[(T, W), W] =
-  result.hasValue = value != nil
+proc Return*[T, W](input: W, rest: W, hasValue: bool, value: T, newerr: string, lefterr, righterr: Error[W] = nil): Maybe[(T, W), W] =
+  result.hasValue = hasValue
   result.value = (value, rest)
-  if lefterr == nil and righterr == nil:
-    if rest != nil and (when rest is string: rest.len != 0 else: true):
+  if not hasValue or rest != nil and (when rest is string: rest.len != 0 else: true):
+    if lefterr == nil and righterr == nil:
       result.errors = Error[W](kind: Leaf, leafError: newerr, input: input)
+    elif lefterr == nil:
+      result.errors = Error[W](kind: Stem, stem: righterr, stemError: newerr, input: input)
+    elif righterr == nil:
+      result.errors = Error[W](kind: Stem, stem: lefterr, stemError: newerr, input: input)
     else:
-      result.errors = nil
-  elif lefterr == nil:
-    result.errors = Error[W](kind: Stem, stem: righterr, stemError: newerr, input: input)
-  elif righterr == nil:
-    result.errors = Error[W](kind: Stem, stem: lefterr, stemError: newerr, input: input)
+      result.errors = Error[W](kind: Branch, left: lefterr, right: righterr, branchError: newerr, input: input)
   else:
-    result.errors = Error[W](kind: Branch, left: lefterr, right: righterr, branchError: newerr, input: input)
+    result.errors = nil
 
 proc Just*[T, U](value: T): Maybe[T, U] =
   result.hasValue = true
@@ -122,6 +122,7 @@ macro regex*(regexStr: string): untyped =# Parser[string, string] =
       Return(
         input = input,
         rest = input[(last+1) .. input.high],
+        hasValue = first == 0,
         value = if first == 0: input[0 .. last] else: nil,
         newerr = `pos` & ": Regex parser couldn't match " & (if first == 0: "more than " & $last & " characters" else: "any characters") & " on regex " & `regexStr`,
       )
@@ -133,10 +134,12 @@ macro s*(value: string): untyped = # StringParser[string] =
   let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: string): Maybe[(string, string), string] =
+      let hasValue = input.startsWith(`value`)
       Return(
         input = input,
         rest = input[`value`.len .. input.high],
-        value = if input.startsWith(`value`): input[0 .. (`value`.len - 1)] else: nil,
+        hasValue = hasValue,
+        value = if hasValue: input[0 .. (`value`.len - 1)] else: nil,
         newerr = `pos` & ": Starts with parser couldn't match " & (if not input.startsWith(`value`): "as string didn't start with \"" & `value` & "\"" else: "full length of the string"),
       )
     )
@@ -153,6 +156,7 @@ macro charmatch*(charset: set[char]): untyped =
       Return(
         input = input,
         rest = input[pos .. input.high],
+        hasValue = pos > 0,
         value = if pos > 0: input[0 .. pos-1] else: nil,
         newerr = `pos` & ": Character set parser couldn't match " & (if pos > 0: "more than " & $pos & " characters" else: "any characters") & " with the charset " & repr(`charset`),
       )
@@ -169,6 +173,7 @@ macro allbut*(but: string): untyped =
       Return(
         input = input,
         rest = input[pos .. input.high],
+        hasValue = pos > 0,
         value = if pos > 0: input[0 .. pos-1] else: nil,
         newerr = `pos` & ": All-but parser couldn't match " & (if pos > 0: "more than " & $pos & " characters" else: "any characters") & " stopping at " & `but`,
       )
@@ -183,7 +188,7 @@ proc optional*[T, U](parser: Parser[T, U]): Parser[T, U] =
     if not result.hasValue:
       result.value[1] = input
     result.hasValue = true
-    result.errors = nil
+    #result.errors = nil
   )
 
 
@@ -209,6 +214,7 @@ proc repeat*[T, U](body: Parser[T, U], atLeast: int = 1): Parser[seq[T], U] =
         return Return(
           input = input,
           rest = rest,
+          hasValue = count >= atLeast,
           value = if count >= atLeast: list else: nil,
           newerr = "Repeat operation failed: " & (if count < atLeast: "Not enough elements matched. Expected at least " & $atLeast & " but got only " & $count else: "Unable to match entire input"),
           lefterr = xresult.errors
@@ -222,9 +228,10 @@ proc `/`*[T, U](lhs, rhs: Parser[T, U]): Parser[T, U] =
   (proc (input: U): Maybe[(T, U), U] =
     let lresult = lhs(input)
     if lresult.hasValue:
-      Return[string, string](
+      Return[T, U](
         input = input,
         rest = lresult.value[1],
+        hasValue = true,
         value = lresult.value[0],
         newerr = "Either operation failed: didn't match entire input",
         lefterr = lresult.errors
@@ -232,18 +239,21 @@ proc `/`*[T, U](lhs, rhs: Parser[T, U]): Parser[T, U] =
     else:
       let rresult = rhs(input)
       if rresult.hasValue:
-        Return[string, string](
+        Return[T, U](
           input = input,
           rest = rresult.value[1],
+          hasValue = true,
           value = rresult.value[0],
           newerr = "Either operation failed: didn't match entire input",
           lefterr = rresult.errors
         )
       else:
-        Return[string, string](
+        var Nil: T
+        Return[T, U](
           input = input,
           rest = input,
-          value = nil,
+          hasValue = false,
+          value = Nil,
           newerr = "Either operation failed: neither operation matched",
           lefterr = lresult.errors,
           righterr = rresult.errors
@@ -254,22 +264,31 @@ proc `+`*[T, U, V](lhs: Parser[T, V], rhs: Parser[U, V]): Parser[(T, U), V] =
   ## And operation. Takes two parsers and returns a new parser with the tuple
   ## of the input parsers results. This only returns if both are true.
   (proc (input: V): Maybe[((T, U), V), V] =
+    var
+      lvalue: T
+      rvalue: U
+      lnext, rnext: V
+      lerrors, rerrors: Error[V]
+      step = 0
     let lresult = lhs(input)
+    lerrors = lresult.errors
     if lresult.hasValue:
-      let (lvalue, lnext) = lresult.value
+      step = 1
+      (lvalue, lnext) = lresult.value
       let rresult = rhs(lnext)
+      rerrors = rresult.errors
       if rresult.hasValue:
-        let (rvalue, rnext) = rresult.value
-        var ret = Just[((T, U), V), V](((lvalue, rvalue), rnext))
-        #ret.errors = Error(kind: Branch, left: lresult.errors, right: rresult.errors, branchError: "Both operation succeded")
-        #var ret = Nothing[((T, U), string)](lresult, rresult, "Both operation sucedded", input)
-        #ret.hasValue = true
-        #ret.value = ((lvalue, rvalue), rnext)
-        return ret
-      else:
-        return Nothing[((T, U), V)](rresult, "Both operation failed: Unable to match second of two parsers", input)
-    else:
-      return Nothing[((T, U), V)](lresult, "Both operation failed: Unable to match first of two parsers", input)
+        step = 2
+        (rvalue, rnext) = rresult.value
+    Return[(T, U), V](
+      input = input,
+      rest = if step == 2: rnext elif step == 1: lnext else: nil,
+      hasValue = step == 2,
+      value = (lvalue, rvalue),
+      newerr = "Both operation failed: " & (if step == 0: "Unable to match first of two parsers" elif step == 1: "Unable to match second of two parsers" else: "Unable to match all input"),
+      lefterr = lerrors,
+      righterr = rerrors
+    )
   )
 
 proc map*[T, U, V](parser: Parser[T, V], f: (proc(value: T): U)): Parser[U, V] =
@@ -277,11 +296,14 @@ proc map*[T, U, V](parser: Parser[T, V], f: (proc(value: T): U)): Parser[U, V] =
   ## returns a parser that outputs the second type.
   (proc (input: V): Maybe[(U, V), V] =
     let xresult = parser(input)
-    if xresult.hasValue:
-      let (xvalue, xnext) = xresult.value
-      return Just[(U, V), (T, V)](xresult,(f(xvalue), xnext))
-    else:
-      return Nothing[(U, string)](xresult, "Unable to map onto bad output", input)
+    Return[U, V](
+      input = input,
+      rest = if xresult.hasValue: xresult.value[1] else: nil,
+      hasValue = xresult.hasValue,
+      value = f(xresult.value[0]),
+      newerr = "Unable to map onto output with error",
+      lefterr = xresult.errors
+    )
   )
 
 proc flatMap*[T, U, V](parser: Parser[T, V], f: (proc(value: T): Parser[U, V])): Parser[U, V] =
@@ -373,6 +395,25 @@ proc getError*[T](input: Maybe[T, string], original: string = nil): string =
     buildError(result, 0, input.errors, original)
     result = result[0..result.high-1]
 
+proc getShortError*[T](input: Maybe[T, string], original: string = nil): string =
+  result = ""
+  var
+    shortestLen = int.high
+    shortestError: Error[string] = nil
+  proc searchShorter(node: Error[string]) =
+    case node.kind:
+      of Leaf:
+        if node.input.len < shortestLen:
+          shortestLen = node.input.len
+          shortestError = node
+      of Stem:
+        searchShorter(node.stem)
+      of Branch:
+        searchShorter(node.left)
+        searchShorter(node.right)
+  searchShorter(input.errors)
+  return shortestError.leafError
+
 proc onerror*[T, U](parser: Parser[T, U], message: string, wrap = false): Parser[T, U] =
   ## Changes the error message of a parser. This way custom errors can be created for
   ## matchers. If the wrap flag is set to true, the message will be inserted as a
@@ -411,7 +452,7 @@ proc parse*[T](parser: Parser[T, string], input: string): T =
     raise newException(ParseError, "Unable to parse:\n" & getError(res, input).indent(2) & "\n")
 
 when isMainModule:
-  template echoParse(parser: untyped, input: untyped, name: string): untyped =
+  template echoParse(name: string, parser: untyped, input: untyped, shouldError: bool): untyped =
     let r1 = parser(input)
     echo if r1.hasValue: name & " has value" else: name & " doesn't have a value"
     if r1.hasValue:
@@ -422,19 +463,26 @@ when isMainModule:
         echo "remaining characters: " & $r1.value[1].len
     echo if r1.errors == nil: name & " doesn't have errors" else: name & " has errors:\n" & r1.getError
     echo ""
+    if shouldError == (r1.errors == nil):
+      raise newException(AssertionError, "Expected parser to " & (if shouldError: "throw" else: "not throw") & " an error")
 
-  echoParse(charmatch({'0'..'9'}), "123;", "r1")
-  echoParse(charmatch({'0'..'9'}) + s(";"), "123;", "r2")
-  echoParse(charmatch({'0'..'9'}) + s(";"), "123 ;", "r3")
-  echoParse(s("hello"), "hello", "r4")
-  echoParse(s("hello"), "hello world", "r5")
-  echoParse(s("hello") / s("world"), "world", "r6")
-  echoParse(s("hello") / s("world"), "worlds", "r7")
-  echoParse(allbut("world"), "hello there", "r8")
-  echoParse(allbut("world"), "hello world", "r9")
-  echoParse(repeat(s("world")), "worldworldworld", "r10")
-  echoParse(repeat(s("world")), "worldworldworldhello", "r11")
-  echoParse(repeat(s("world"), atLeast = 4), "worldworldworld", "r12")
+  echoParse("r1", charmatch({'0'..'9'}), "123;", true)
+  echoParse("r2", charmatch({'0'..'9'}) + s(";"), "123;", false)
+  echoParse("r3", charmatch({'0'..'9'}) + s(";"), "123 ;", true)
+  echoParse("r4", s("hello"), "hello", false)
+  echoParse("r5", s("hello"), "hello world", true)
+  echoParse("r6", s("hello") / s("world"), "world", false)
+  echoParse("r7", s("hello") / s("world"), "worlds", true)
+  echoParse("r8", allbut("world"), "hello there", false)
+  echoParse("r9", allbut("world"), "hello world", true)
+  echoParse("r10", repeat(s("world")), "worldworldworld", false)
+  echoParse("r11", repeat(s("world")), "worldworldworldhello", true)
+  echoParse("r12", repeat(s("world"), atLeast = 4), "worldworldworld", true)
+  echoParse("r13", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)), "123", false)
+  echoParse("r14", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)), "123;", true)
+  echoParse("r15", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)) + s(";"), "123;", false)
+  let x = (s("world") + ((s("test") + s("hello")) / (s("world") + s("hello"))))("worldworldworld")
+  echo getShortError(x) 
 
 when false:# isMainModule:
   type
