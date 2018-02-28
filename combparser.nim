@@ -121,7 +121,7 @@ macro regex*(regexStr: string): untyped =# Parser[string, string] =
       let (first, last) = findBounds(input, regex)
       Return(
         input = input,
-        rest = input[(last+1) .. input.high],
+        rest = if input.len == 0: input else: input[(last+1) .. input.high],
         hasValue = first == 0,
         value = if first == 0: input[0 .. last] else: nil,
         newerr = `pos` & ": Regex parser couldn't match " & (if first == 0: "more than " & $last & " characters" else: "any characters") & " on regex " & `regexStr`,
@@ -137,7 +137,7 @@ macro s*(value: string): untyped = # StringParser[string] =
       let hasValue = input.startsWith(`value`)
       Return(
         input = input,
-        rest = input[`value`.len .. input.high],
+        rest = if input.len == 0 or `value`.len > input.high: input else: input[`value`.len .. input.high],
         hasValue = hasValue,
         value = if hasValue: input[0 .. (`value`.len - 1)] else: nil,
         newerr = `pos` & ": Starts with parser couldn't match " & (if not input.startsWith(`value`): "as string didn't start with \"" & `value` & "\"" else: "full length of the string"),
@@ -296,11 +296,12 @@ proc map*[T, U, V](parser: Parser[T, V], f: (proc(value: T): U)): Parser[U, V] =
   ## returns a parser that outputs the second type.
   (proc (input: V): Maybe[(U, V), V] =
     let xresult = parser(input)
+    var x: U
     Return[U, V](
       input = input,
       rest = if xresult.hasValue: xresult.value[1] else: nil,
       hasValue = xresult.hasValue,
-      value = f(xresult.value[0]),
+      value = if xresult.hasValue: f(xresult.value[0]) else: x,
       newerr = "Unable to map onto output with error",
       lefterr = xresult.errors
     )
@@ -358,12 +359,12 @@ proc pos(first, second: int): int =
   else:
     second
 
-proc getError*[T](input: Maybe[T, string], original: string = nil): string =
+proc getError*[T](input: Maybe[T, string], original: string = nil, errorPath: seq[int] = nil): string =
   ## Will generate an error message from the given input. If original is supplied
   ## it will be used to show where in the input the error occured.
   result = ""
   if input.errors != nil:
-    proc buildError(res: var string, level: int, node: Error[string], original: string) =
+    proc buildError(res: var string, level: int, node: Error[string], original: string, errorPath: seq[int]) =
       case node.kind:
         of Leaf:
           if original != nil and node.input != nil:
@@ -386,33 +387,39 @@ proc getError*[T](input: Maybe[T, string], original: string = nil): string =
             res = res & "  ".repeat(level) & node.stemError & " on input nil\n"
           else:
             res = res & "  ".repeat(level) & node.stemError & " on input \"" & node.input[0..<(pos(node.input.find("\n"), node.input.len))] & "\"\n"
-          buildError(res, level + 1, node.stem, original)
+          buildError(res, level + 1, node.stem, original, errorPath)
         of Branch:
           res = res & "  ".repeat(level) & node.branchError & "\n"
-          buildError(res, level + 1, node.left, original)
-          buildError(res, level + 1, node.right, original)
+          if errorPath != nil:
+            if errorPath[0] == 0:
+              buildError(res, level + 1, node.left, original, errorPath[1..errorPath.high])
+            else:
+              buildError(res, level + 1, node.right, original, errorPath[1..errorPath.high])
+          else:
+            buildError(res, level + 1, node.left, original, nil)
+            buildError(res, level + 1, node.right, original, nil)
 
-    buildError(result, 0, input.errors, original)
+    buildError(result, 0, input.errors, original, errorPath)
     result = result[0..result.high-1]
 
 proc getShortError*[T](input: Maybe[T, string], original: string = nil): string =
   result = ""
   var
     shortestLen = int.high
-    shortestError: Error[string] = nil
-  proc searchShorter(node: Error[string]) =
+    shortestPath: seq[int] = @[]
+  proc searchShorter(node: Error[string], path: seq[int]) =
     case node.kind:
       of Leaf:
         if node.input.len < shortestLen:
           shortestLen = node.input.len
-          shortestError = node
+          shortestPath = path
       of Stem:
-        searchShorter(node.stem)
+        searchShorter(node.stem, path)
       of Branch:
-        searchShorter(node.left)
-        searchShorter(node.right)
-  searchShorter(input.errors)
-  return shortestError.leafError
+        searchShorter(node.left, path & 0)
+        searchShorter(node.right, path & 1)
+  searchShorter(input.errors, @[])
+  return getError(input, original, shortestPath)
 
 proc onerror*[T, U](parser: Parser[T, U], message: string, wrap = false): Parser[T, U] =
   ## Changes the error message of a parser. This way custom errors can be created for
@@ -452,7 +459,7 @@ proc parse*[T](parser: Parser[T, string], input: string): T =
     raise newException(ParseError, "Unable to parse:\n" & getError(res, input).indent(2) & "\n")
 
 when isMainModule:
-  template echoParse(name: string, parser: untyped, input: untyped, shouldError: bool): untyped =
+  template runTest(name: string, parser: untyped, input: untyped, shouldError: bool): untyped =
     let r1 = parser(input)
     echo if r1.hasValue: name & " has value" else: name & " doesn't have a value"
     if r1.hasValue:
@@ -466,25 +473,26 @@ when isMainModule:
     if shouldError == (r1.errors == nil):
       raise newException(AssertionError, "Expected parser to " & (if shouldError: "throw" else: "not throw") & " an error")
 
-  echoParse("r1", charmatch({'0'..'9'}), "123;", true)
-  echoParse("r2", charmatch({'0'..'9'}) + s(";"), "123;", false)
-  echoParse("r3", charmatch({'0'..'9'}) + s(";"), "123 ;", true)
-  echoParse("r4", s("hello"), "hello", false)
-  echoParse("r5", s("hello"), "hello world", true)
-  echoParse("r6", s("hello") / s("world"), "world", false)
-  echoParse("r7", s("hello") / s("world"), "worlds", true)
-  echoParse("r8", allbut("world"), "hello there", false)
-  echoParse("r9", allbut("world"), "hello world", true)
-  echoParse("r10", repeat(s("world")), "worldworldworld", false)
-  echoParse("r11", repeat(s("world")), "worldworldworldhello", true)
-  echoParse("r12", repeat(s("world"), atLeast = 4), "worldworldworld", true)
-  echoParse("r13", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)), "123", false)
-  echoParse("r14", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)), "123;", true)
-  echoParse("r15", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)) + s(";"), "123;", false)
-  let x = (s("world") + ((s("test") + s("hello")) / (s("world") + s("hello"))))("worldworldworld")
-  echo getShortError(x) 
+  runTest("Test 1", charmatch({'0'..'9'}), "123;", true)
+  runTest("Test 2", charmatch({'0'..'9'}) + s(";"), "123;", false)
+  runTest("Test 3", charmatch({'0'..'9'}) + s(";"), "123 ;", true)
+  runTest("Test 4", s("hello"), "hello", false)
+  runTest("Test 5", s("hello"), "hello world", true)
+  runTest("Test 6", s("hello") / s("world"), "world", false)
+  runTest("Test 7", s("hello") / s("world"), "worlds", true)
+  runTest("Test 8", allbut("world"), "hello there", false)
+  runTest("Test 9", allbut("world"), "hello world", true)
+  runTest("Test 10", repeat(s("world")), "worldworldworld", false)
+  runTest("Test 11", repeat(s("world")), "worldworldworldhello", true)
+  runTest("Test 12", repeat(s("world"), atLeast = 4), "worldworldworld", true)
+  runTest("Test 13", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)), "123", false)
+  runTest("Test 14", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)), "123;", true)
+  runTest("Test 15", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)) + s(";"), "123;", false)
+  let x = (s("world") + ((s("world") + s("hello")) / (s("test") + s("hello"))))("worldworldworld")
+  echo x.getError
+  echo getShortError(x)
 
-when false:# isMainModule:
+#when false:# isMainModule:
   type
     NodeKind = enum Operator, Value
     Node = ref object
