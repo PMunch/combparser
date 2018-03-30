@@ -16,6 +16,7 @@
 
 import strutils
 import re
+import pegs
 import macros
 
 type
@@ -131,6 +132,23 @@ macro regex*(regexStr: string): untyped =# Parser[string, string] =
         hasValue = first == 0,
         value = if first == 0: input[0 .. last] else: nil,
         newerr = `pos` & ": Regex parser couldn't match " & (if first == 0: "more than " & $last & " characters" else: "any characters") & " on regex " & `regexStr`,
+      )
+    )
+
+macro peg*(pegStr: string): untyped =# Parser[string, string] =
+  ## Returns a parser that returns the string matched by the PEG
+  let pos = lineInfo(callsite())
+  result = quote do:
+    (proc (input: string): Maybe[(string, string), string] =
+      let peg = pegs.peg(`pegStr`)
+      var matches = newSeq[string]()
+      let (first, last) = findBounds(input, peg, matches)
+      Return(
+        input = input,
+        rest = if input.len == 0: input else: input[(last+1) .. input.high],
+        hasValue = first == 0,
+        value = if first == 0: input[0 .. last] else: nil,
+        newerr = `pos` & ": PEG parser couldn't match " & (if first == 0: "more than " & $last & " characters" else: "any characters") & " on PEG " & `pegStr`,
       )
     )
 
