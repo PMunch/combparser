@@ -1,14 +1,20 @@
-## This module is intended to be a user friendly library for
-## creating parsers in Nim. Currently it only parses strings but
-## the idea is to support mode kinds of input in the future.
-## The initial effort focused on adding better error statements
-## so that parsers are easier to debug.
-##
-## The starting point for this library was created by kmizu:
-## https://gist.github.com/kmizu/2b10c2bf0ab3eafecc1a825b892482f3
+## This library implements what is known as a parser combinator system. The idea
+## behind this is to define your language by writing small, composable parsers
+## and combining them into a larger logic. It was written mainly for the
+## protobuf library which needed a parser that could run on compile-time to
+## parse the protobuf specification. The original idea came from a small
+## example library written by kmizu:
+## https://gist.github.com/kmizu/2b10c2bf0ab3eafecc1a825b892482f3 but has been
+## extensively rewritten with more matchers, more combinators, and proper error
+## handling. It still has some way to go to be the user-friendly parser library
+## it was indented to be, but it works well enough for now. For some examples
+## on how to use the library see the examples folder. Most of the combinators
+## have been written to accept not only string input and output, but any type.
+## This means that this library could theoretically be used to parse not only
+## string data but other types of data as well. Currently however the error
+## reporting is only string based, but an alternate system is being considered.
 
 import strutils
-import lists
 import re
 import macros
 
@@ -137,7 +143,7 @@ macro s*(value: string): untyped = # StringParser[string] =
       let hasValue = input.startsWith(`value`)
       Return(
         input = input,
-        rest = if input.len == 0 or `value`.len > input.high: input else: input[`value`.len .. input.high],
+        rest = if input.len == 0 or `value`.len > input.len: input else: input[`value`.len .. input.high],
         hasValue = hasValue,
         value = if hasValue: input[0 .. (`value`.len - 1)] else: nil,
         newerr = `pos` & ": Starts with parser couldn't match " & (if not input.startsWith(`value`): "as string didn't start with \"" & `value` & "\"" else: "full length of the string"),
@@ -163,7 +169,7 @@ macro charmatch*(charset: set[char]): untyped =
     )
 
 macro allbut*(but: string): untyped =
-  ## Matches anything up to `but`.
+  ## Matches anything up to ``but``.
   let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: string): Maybe[(string, string), string] =
@@ -193,9 +199,11 @@ proc optional*[T, U](parser: Parser[T, U]): Parser[T, U] =
 
 
 proc repeat*[T, U](body: Parser[T, U], atLeast: int = 1): Parser[seq[T], U] =
-  ## Returns a parser that returns a linked list of the input parsers type.
-  ## Used to accept more multiple elements matching a pattern. If there is
-  ## no match this will return an empty list and all the input as it's rest
+  ## Returns a parser that returns a sequence of the input parsers type.
+  ## Used to accept more multiple elements matching a pattern. The ``atLeast``
+  ## parameter can be used to set a lower limit on how many elements should be
+  ## matched. If it is set to 0 and there is no match this will return an empty
+  ## sequence and all the input as it's rest
   (proc (input: U): Maybe[(seq[T], U), U] =
     var
       list: seq[T] = @[]
@@ -223,7 +231,7 @@ proc repeat*[T, U](body: Parser[T, U], atLeast: int = 1): Parser[seq[T], U] =
   )
 
 proc `/`*[T, U](lhs, rhs: Parser[T, U]): Parser[T, U] =
-  ## Or operation. Takes two parser and returns a parser that will return
+  ## Or operation. Takes two parsers and returns a parser that will return
   ## the first matching parser.
   (proc (input: U): Maybe[(T, U), U] =
     let lresult = lhs(input)
@@ -261,8 +269,9 @@ proc `/`*[T, U](lhs, rhs: Parser[T, U]): Parser[T, U] =
   )
 
 proc `+`*[T, U, V](lhs: Parser[T, V], rhs: Parser[U, V]): Parser[(T, U), V] =
-  ## And operation. Takes two parsers and returns a new parser with the tuple
-  ## of the input parsers results. This only returns if both are true.
+  ## And operation. Takes two parsers and returns a new parser that returns a
+  ## tuple of the input parsers results. This only returns if both parsers
+  ## match succesfully.
   (proc (input: V): Maybe[((T, U), V), V] =
     var
       lvalue: T
@@ -359,6 +368,26 @@ proc pos(first, second: int): int =
   else:
     second
 
+proc ignorefirst*[T](first: StringParser[string], catch: StringParser[T]): StringParser[T] =
+  ## Matches ``catch`` and ignores if it is preceded by ``first``. So both the
+  ## input "Hello world" and "world" would match a parser
+  ## ``ignorefirst(s("Hello "), s("world"))`` and return only "world".
+  (first + catch).map(proc(input: tuple[f1: string, f2: T]): T = input.f2) / catch
+
+proc ignorelast*[T](catch: StringParser[T], last: StringParser[string]): StringParser[T] =
+  ## Same as ignorefirst, but ignores the last of the two arguments instead.
+  (catch + last).map(proc(input: tuple[f1: T, f2: string]): T = input.f1) / catch
+
+template ignoresides*(first, catch, last: typed): untyped =
+  ## Wrapper that translates to ``ignorelast(ignorefirst(first, catch), last)``
+  ignorefirst(first, catch).ignorelast(last)
+
+proc andor*(first, last: StringParser[string]): StringParser[string] =
+  ## Matches either ``first`` followed by ``last`` or just ``first`` or
+  ## ``last``. In the case that bath are matched they will be concatenated.
+  (first + last).map(proc(input: tuple[f1, f2: string]): string = input.f1 & input.f2) /
+    (first / last)
+
 proc getError*[T](input: Maybe[T, string], original: string = nil, errorPath: seq[int] = nil): string =
   ## Will generate an error message from the given input. If original is supplied
   ## it will be used to show where in the input the error occured.
@@ -452,177 +481,16 @@ proc `$`*[T](input: Maybe[T, string]): string =
   else:
     $input.value
 
-proc parse*[T](parser: Parser[T, string], input: string): T =
+proc parse*[T](parser: Parser[T, string], input: string, longError = false): T =
+  ## Convenience procedure to call a parser and check if there are any errors.
+  ## Raises a ParseError exception with an attached error message. Should you
+  ## want more information in the error message set longError to true.
   let res = parser(input)
   if res.hasValue and (res.value[1] == "" or res.errors == nil):
     return res.value[0]
   else:
-    raise newException(ParseError, "Unable to parse:\n" & getError(res, input).indent(2) & "\n")
-
-when isMainModule:
-  template runTest(name: string, parser: untyped, input: untyped, shouldError: bool): untyped =
-    let r1 = parser(input)
-    echo if r1.hasValue: name & " has value" else: name & " doesn't have a value"
-    if r1.hasValue:
-      echo r1.value[0]
-      if r1.value[1].len == 0:
-        echo "all consumed"
-      else:
-        echo "remaining characters: " & $r1.value[1].len
-    echo if r1.errors == nil: name & " doesn't have errors" else: name & " has errors:\n" & r1.getError
-    echo ""
-    if shouldError == (r1.errors == nil):
-      raise newException(AssertionError, "Expected parser to " & (if shouldError: "throw" else: "not throw") & " an error")
-
-  runTest("Test 1", charmatch({'0'..'9'}), "123;", true)
-  runTest("Test 2", charmatch({'0'..'9'}) + s(";"), "123;", false)
-  runTest("Test 3", charmatch({'0'..'9'}) + s(";"), "123 ;", true)
-  runTest("Test 4", s("hello"), "hello", false)
-  runTest("Test 5", s("hello"), "hello world", true)
-  runTest("Test 6", s("hello") / s("world"), "world", false)
-  runTest("Test 7", s("hello") / s("world"), "worlds", true)
-  runTest("Test 8", allbut("world"), "hello there", false)
-  runTest("Test 9", allbut("world"), "hello world", true)
-  runTest("Test 10", repeat(s("world")), "worldworldworld", false)
-  runTest("Test 11", repeat(s("world")), "worldworldworldhello", true)
-  runTest("Test 12", repeat(s("world"), atLeast = 4), "worldworldworld", true)
-  runTest("Test 13", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)), "123", false)
-  runTest("Test 14", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)), "123;", true)
-  runTest("Test 15", charmatch({'0'..'9'}).map(proc (input: string): int = parseInt(input)) + s(";"), "123;", false)
-  let x = (s("world") + ((s("world") + s("hello")) / (s("test") + s("hello"))))("worldworldworld")
-  echo x.getError
-  echo getShortError(x)
-
-#when false:# isMainModule:
-  type
-    NodeKind = enum Operator, Value
-    Node = ref object
-      case kind: NodeKind
-      of Value:
-        value: int
-      of Operator:
-        operator: string
-        left: Node
-        right: Node
-
-  proc `$`(tree: Node): string =
-    case tree.kind:
-      of Value:
-        "Value(" & $tree.value & ")"
-      of Operator:
-        "Operator(" & $tree.left & " " & tree.operator & " " & $tree.right & ")"
-
-  proc number(): Parser[int, string]
-
-  proc Addition(): StringParser[Node]
-
-  proc Multiplication(): StringParser[Node]
-
-  proc Parenthesis(): StringParser[Node]
-
-  proc Expression(): StringParser[Node] = Addition()
-
-  proc Addition(): StringParser[Node] = Multiplication().chainl(
-    (s("+").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
-    (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "+", left: lhs, right: rhs)))) /
-    (s("-").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
-    (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "-", left: lhs, right: rhs))))
-  )
-
-  proc Multiplication(): StringParser[Node] = Parenthesis().chainl(
-    (s("*").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
-      (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "*", left: lhs, right: rhs)))) /
-    (s("/").map(proc(_: string): (proc(lhs: Node, rhs: Node): Node) =
-      (proc(lhs: Node, rhs: Node): Node = Node(kind: Operator, operator: "/", left: lhs, right: rhs))))
-  )
-
-  proc Parenthesis(): StringParser[Node] =
-    regex(r"\s*\(\s*").flatMap(proc(_: string): StringParser[Node] =
-      Expression().flatMap(proc(e: Node): StringParser[Node] =
-        regex(r"\s*\)\s*").map(proc(_: string): Node =
-          e))) / number().map(proc(val: int): Node =
-            Node(kind: Value, value: val))
-
-  proc A(): StringParser[int]
-
-  proc M(): StringParser[int]
-
-  proc P(): StringParser[int]
-
-  proc E(): StringParser[int] = A()
-
-  proc A(): StringParser[int] = M().chainl1(
-    (s("+").map(proc(_: string): (proc(lhs: int, rhs: int): int) =
-      (proc(lhs: int, rhs: int): int = lhs + rhs))) /
-    (s("-").map(proc(_: string): (proc(lhs: int, rhs: int): int) =
-      (proc(lhs: int, rhs: int): int = lhs - rhs)))
-  )
-
-  proc M(): StringParser[int] = P().chainl(
-    (s("*").map(proc(_: string): (proc(lhs: int, rhs: int): int) =
-      (proc(lhs: int, rhs: int): int = lhs * rhs))) /
-    (s("/").map(proc(_: string): (proc(lhs: int, rhs: int): int) =
-      (proc(lhs: int, rhs: int): int = lhs div rhs)))
-  )
-
-  proc P(): StringParser[int] =
-    regex(r"\s*\(\s*").flatMap(proc(_: string): StringParser[int] =
-      E().flatMap(proc(e: int): StringParser[int] =
-        regex(r"\s*\)\s*").map(proc(_: string): int =
-          e))) / number()
-
-  proc number(): Parser[int, string] = regex(r"\s*[0-9]+\s*").map(proc(n: string): int =
-    parseInt(n.strip()))
-
-  echo parse(Expression(), "( 1 + 2 )  *   ( 3 + 4 )")
-  echo "-----------------------------------------"
-  echo parse(Expression(), " 1 + 2  *  3 + 4")
-  echo "-----------------------------------------"
-  #echo parse(Expression(), "1 + 2  *  3 + 4 Hello world")
-  echo "-----------------------------------------"
-  var res: Maybe[(int, string), string]
-  res = E()("( 1 + 2 )  *   ( 3 + 4 )  Hello world")
-  if res.hasValue:
-    echo res
-  else:
-    echo res.getError
-  echo "-----------------------------------------"
-  res = E()("( 1 + 2 )  *   ( 3 + 4 )")
-  if res.hasValue:
-    echo res
-  else:
-    echo res.getError
-  echo "-----------------------------------------"
-  res = E()("( 1 + 2 ) \n * \n ( 3 + 4 ")
-  if res.hasValue:
-    echo res
-  else:
-    echo res.getError("( 1 + 2 ) \n * \n ( 3 + 4 ")
-  echo "-----------------------------------------"
-  res = E()("1 +")
-  if res.hasValue:
-    echo res
-  else:
-    echo res.getError
-  echo "-----------------------------------------"
-  echo parse(E(), "1 + 5")
-  echo "-----------------------------------------"
-  #echo parse(E(), "1 + ")
-  macro testMacro(t: untyped): untyped =
-    echo t.treeRepr
-    let ret = (nodeKind(nnkStmtList) + nodeKind(nnkCommand).repeat())(@[t])
-    if ret.hasValue:
-      echo ret.value[0][0].treeRepr
-      echo "List:"
-      for i in ret.value[0][1]:
-        echo i.treeRepr.indent(1, "  ")
-      echo "Rest:"
-      for i in ret.value[1]:
-        echo i.treeRepr.indent(1, "  ")
+    if longError:
+      raise newException(ParseError, "Unable to parse:\n" & getError(res, input).indent(2) & "\n")
     else:
-      echo "Error!"
-    return newStmtList()
+      raise newException(ParseError, "Unable to parse:\n" & getShortError(res, input).indent(2) & "\n")
 
-  testMacro:
-    echo "Hello"
-    echo "world"
