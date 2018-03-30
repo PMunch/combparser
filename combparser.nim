@@ -404,22 +404,23 @@ proc getError*[T](input: Maybe[T, string], original: string = nil, errorPath: se
 
 proc getShortError*[T](input: Maybe[T, string], original: string = nil): string =
   result = ""
-  var
-    shortestLen = int.high
-    shortestPath: seq[int] = @[]
-  proc searchShorter(node: Error[string], path: seq[int]) =
-    case node.kind:
-      of Leaf:
-        if node.input.len < shortestLen:
-          shortestLen = node.input.len
-          shortestPath = path
-      of Stem:
-        searchShorter(node.stem, path)
-      of Branch:
-        searchShorter(node.left, path & 0)
-        searchShorter(node.right, path & 1)
-  searchShorter(input.errors, @[])
-  return getError(input, original, shortestPath)
+  if input.errors != nil:
+    var
+      shortestLen = int.high
+      shortestPath: seq[int] = @[]
+    proc searchShorter(node: Error[string], path: seq[int]) =
+      case node.kind:
+        of Leaf:
+          if node.input.len < shortestLen:
+            shortestLen = node.input.len
+            shortestPath = path
+        of Stem:
+          searchShorter(node.stem, path)
+        of Branch:
+          searchShorter(node.left, path & 0)
+          searchShorter(node.right, path & 1)
+    searchShorter(input.errors, @[])
+    return getError(input, original, shortestPath)
 
 proc onerror*[T, U](parser: Parser[T, U], message: string, wrap = false): Parser[T, U] =
   ## Changes the error message of a parser. This way custom errors can be created for
