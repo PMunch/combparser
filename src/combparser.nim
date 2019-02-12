@@ -44,7 +44,7 @@ type
 proc Return*[T, W](input: W, rest: W, hasValue: bool, value: T, newerr: string, lefterr, righterr: Error[W] = nil): Maybe[(T, W), W] =
   result.hasValue = hasValue
   result.value = (value, rest)
-  if not hasValue or rest != nil and (when rest is string: rest.len != 0 else: true):
+  if not hasValue or rest.len != 0 and (when rest is string: rest.len != 0 else: true):
     if lefterr == nil and righterr == nil:
       result.errors = Error[W](kind: Leaf, leafError: newerr, input: input)
     elif lefterr == nil:
@@ -130,7 +130,7 @@ macro regex*(regexStr: string): untyped =# Parser[string, string] =
         input = input,
         rest = if input.len == 0: input else: input[(last+1) .. input.high],
         hasValue = first == 0,
-        value = if first == 0: input[0 .. last] else: nil,
+        value = if first == 0: input[0 .. last] else: "",
         newerr = `pos` & ": Regex parser couldn't match " & (if first == 0: "more than " & $last & " characters" else: "any characters") & " on regex " & `regexStr`,
       )
     )
@@ -147,7 +147,7 @@ macro peg*(pegStr: string): untyped =# Parser[string, string] =
         input = input,
         rest = if input.len == 0: input else: input[(last+1) .. input.high],
         hasValue = first == 0,
-        value = if first == 0: input[0 .. last] else: nil,
+        value = if first == 0: input[0 .. last] else: "",
         newerr = `pos` & ": PEG parser couldn't match " & (if first == 0: "more than " & $last & " characters" else: "any characters") & " on PEG " & `pegStr`,
       )
     )
@@ -163,7 +163,7 @@ macro s*(value: string): untyped = # StringParser[string] =
         input = input,
         rest = if input.len == 0 or `value`.len > input.len: input else: input[`value`.len .. input.high],
         hasValue = hasValue,
-        value = if hasValue: input[0 .. (`value`.len - 1)] else: nil,
+        value = if hasValue: input[0 .. (`value`.len - 1)] else: "",
         newerr = `pos` & ": Starts with parser couldn't match " & (if not input.startsWith(`value`): "as string didn't start with \"" & `value` & "\"" else: "full length of the string"),
       )
     )
@@ -181,7 +181,7 @@ macro charmatch*(charset: set[char]): untyped =
         input = input,
         rest = input[pos .. input.high],
         hasValue = pos > 0,
-        value = if pos > 0: input[0 .. pos-1] else: nil,
+        value = if pos > 0: input[0 .. pos-1] else: "",
         newerr = `pos` & ": Character set parser couldn't match " & (if pos > 0: "more than " & $pos & " characters" else: "any characters") & " with the charset " & repr(`charset`),
       )
     )
@@ -198,7 +198,7 @@ macro allbut*(but: string): untyped =
         input = input,
         rest = input[pos .. input.high],
         hasValue = pos > 0,
-        value = if pos > 0: input[0 .. pos-1] else: nil,
+        value = if pos > 0: input[0 .. pos-1] else: "",
         newerr = `pos` & ": All-but parser couldn't match " & (if pos > 0: "more than " & $pos & " characters" else: "any characters") & " stopping at " & `but`,
       )
     )
@@ -241,7 +241,7 @@ proc repeat*[T, U](body: Parser[T, U], atLeast: int = 1): Parser[seq[T], U] =
           input = input,
           rest = rest,
           hasValue = count >= atLeast,
-          value = if count >= atLeast: list else: nil,
+          value = if count >= atLeast: list else: @[],
           newerr = "Repeat operation failed: " & (if count < atLeast: "Not enough elements matched. Expected at least " & $atLeast & " but got only " & $count else: "Unable to match entire input"),
           lefterr = xresult.errors
         )
@@ -309,7 +309,7 @@ proc `+`*[T, U, V](lhs: Parser[T, V], rhs: Parser[U, V]): Parser[(T, U), V] =
         (rvalue, rnext) = rresult.value
     Return[(T, U), V](
       input = input,
-      rest = if step == 2: rnext elif step == 1: lnext else: nil,
+      rest = if step == 2: rnext elif step == 1: lnext else: "",
       hasValue = step == 2,
       value = (lvalue, rvalue),
       newerr = "Both operation failed: " & (if step == 0: "Unable to match first of two parsers" elif step == 1: "Unable to match second of two parsers" else: "Unable to match all input"),
@@ -326,7 +326,7 @@ proc map*[T, U, V](parser: Parser[T, V], f: (proc(value: T): U)): Parser[U, V] =
     var x: U
     Return[U, V](
       input = input,
-      rest = if xresult.hasValue: xresult.value[1] else: nil,
+      rest = if xresult.hasValue: xresult.value[1] else: "",
       hasValue = xresult.hasValue,
       value = if xresult.hasValue: f(xresult.value[0]) else: x,
       newerr = "Unable to map onto output with error",
@@ -406,7 +406,7 @@ proc andor*(first, last: StringParser[string]): StringParser[string] =
   (first + last).map(proc(input: tuple[f1, f2: string]): string = input.f1 & input.f2) /
     (first / last)
 
-proc getError*[T](input: Maybe[T, string], original: string = nil, errorPath: seq[int] = nil): string =
+proc getError*[T](input: Maybe[T, string], original: string = "", errorPath: seq[int] = @[]): string =
   ## Will generate an error message from the given input. If original is supplied
   ## it will be used to show where in the input the error occured.
   result = ""
@@ -414,7 +414,7 @@ proc getError*[T](input: Maybe[T, string], original: string = nil, errorPath: se
     proc buildError(res: var string, level: int, node: Error[string], original: string, errorPath: seq[int]) =
       case node.kind:
         of Leaf:
-          if original != nil and node.input != nil:
+          if original.len != 0 and node.input.len != 0:
             let
               pos = original.rfind(node.input)
               startStr = original[0..<pos]
@@ -425,31 +425,31 @@ proc getError*[T](input: Maybe[T, string], original: string = nil, errorPath: se
             res = res & newLine & startLine & endStr & "\"\n"
             res = res & " ".repeat(newLine.len + startLine.len) & "^\n"
           else:
-            if node.input == nil:
+            if node.input.len == 0:
               res = res & "  ".repeat(level) & node.leafError & " on input nil\n"
             else:
               res = res & "  ".repeat(level) & node.leafError & " on input \"" & node.input[0..<(pos(node.input.find("\n"), node.input.len))] & "\"\n"
         of Stem:
-          if node.input == nil:
+          if node.input.len == 0:
             res = res & "  ".repeat(level) & node.stemError & " on input nil\n"
           else:
             res = res & "  ".repeat(level) & node.stemError & " on input \"" & node.input[0..<(pos(node.input.find("\n"), node.input.len))] & "\"\n"
           buildError(res, level + 1, node.stem, original, errorPath)
         of Branch:
           res = res & "  ".repeat(level) & node.branchError & "\n"
-          if errorPath != nil:
+          if errorPath.len != 0:
             if errorPath[0] == 0:
               buildError(res, level + 1, node.left, original, errorPath[1..errorPath.high])
             else:
               buildError(res, level + 1, node.right, original, errorPath[1..errorPath.high])
           else:
-            buildError(res, level + 1, node.left, original, nil)
-            buildError(res, level + 1, node.right, original, nil)
+            buildError(res, level + 1, node.left, original, @[])
+            buildError(res, level + 1, node.right, original, @[])
 
     buildError(result, 0, input.errors, original, errorPath)
     result = result[0..result.high-1]
 
-proc getShortError*[T](input: Maybe[T, string], original: string = nil): string =
+proc getShortError*[T](input: Maybe[T, string], original: string = ""): string =
   result = ""
   if input.errors != nil:
     var
@@ -482,7 +482,7 @@ proc onerror*[T, U](parser: Parser[T, U], message: string, wrap = false): Parser
         result.errors = Error[U](kind: Stem, stemError: message, stem: result.errors, input: input)
   )
 
-macro raisehere*[T, U](parser: Parser[T, U], original: string = nil): untyped =
+macro raisehere*[T, U](parser: Parser[T, U], original: string = ""): untyped =
   ## For help with debugging or to achieve early termination. Will raise any
   ## error immediately if parser has no result, otherwise it does nothing.
   let pos = lineInfo(callsite())

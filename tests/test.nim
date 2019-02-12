@@ -1,4 +1,4 @@
-import "../combparser"
+import "../src/combparser"
 import strutils
 
 template runTest(name: string, parser: untyped, input: untyped, shouldError: bool): untyped =

@@ -1,6 +1,6 @@
 ## This example shows how you can use combparser to parse strings into a tree
 ## representation.
-import "../combparser", strutils
+import "../src/combparser", strutils
 
 type
   NodeKind = enum Operator, Value

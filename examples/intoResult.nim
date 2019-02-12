@@ -1,6 +1,6 @@
 ## This example shows how you can use combparser to parse strings and perform
 ## actions to reduce it down into a single result.
-import "../combparser", strutils
+import "../src/combparser", strutils
 
 proc Number(): Parser[int, string]
 
