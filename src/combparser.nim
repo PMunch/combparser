@@ -19,6 +19,9 @@ import re
 import pegs
 import macros
 
+proc lineinfoStr(arg: tuple[filename: string, line: int, column: int]): string =
+  arg.filename & "(" & $arg.line & ", " & $arg.column & ")"
+
 type
   Parser*[T, U] = proc(input: U): Maybe[(T, U), U]
   StringParser*[T] = Parser[T, string]
@@ -102,8 +105,7 @@ proc Something*[T, U, V](ret: var Maybe[T, V], first: Maybe[U, V], error: string
   else:
     ret.errors = Error[V](kind: Branch, left: first.errors, right: ret.errors, branchError: error, input: input)
 
-macro nodeKind*(kind: NimNodeKind): untyped =
-  let pos = lineInfo(callsite())
+macro nodeKindAux(kind: NimNodeKind, pos: string): untyped =
   result = quote do:
     (proc (input: seq[NimNode]): Maybe[(NimNode, seq[NimNode]), seq[NimNode]] =
       if input[0].kind == `kind`:
@@ -119,9 +121,11 @@ macro nodeKind*(kind: NimNodeKind): untyped =
         Nothing[(NimNode, seq[NimNode]), seq[NimNode]](`pos` & ": Couldn't match node kind \"" & "" & "\"", input)
     )
 
-macro regex*(regexStr: string): untyped =# Parser[string, string] =
+template nodeKind*(kind: NimNodeKind): untyped =
+  nodeKindAux(kind, lineinfoStr(instantiationInfo(fullpaths = true)))
+
+macro regexAux(regexStr: string, pos: string): untyped =# Parser[string, string] =
   ## Returns a parser that returns the string matched by the regex
-  let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: string): Maybe[(string, string), string] =
       let regex = re(`regexStr`)
@@ -135,9 +139,11 @@ macro regex*(regexStr: string): untyped =# Parser[string, string] =
       )
     )
 
-macro peg*(pegStr: string): untyped =# Parser[string, string] =
+template regex*(regexStr: string): untyped =
+  regexAux(regexStr, lineinfoStr(instantiationInfo(fullpaths = true)))
+
+macro pegAux(pegStr: string, pos: string): untyped =# Parser[string, string] =
   ## Returns a parser that returns the string matched by the PEG
-  let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: string): Maybe[(string, string), string] =
       let peg = pegs.peg(`pegStr`)
@@ -152,10 +158,12 @@ macro peg*(pegStr: string): untyped =# Parser[string, string] =
       )
     )
 
-macro s*(value: string): untyped = # StringParser[string] =
+template peg*(pegStr: string): untyped =# Parser[string, string] =
+  pegAux(pegStr, lineinfoStr(instantiationInfo(fullpaths = true)))
+
+macro sAux(value: string, pos: string): untyped = # StringParser[string] =
   ## Start with parser. Returns a parser that matches if the input starts
   ## with the given string.
-  let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: string): Maybe[(string, string), string] =
       let hasValue = input.startsWith(`value`)
@@ -168,9 +176,11 @@ macro s*(value: string): untyped = # StringParser[string] =
       )
     )
 
-macro charmatch*(charset: set[char]): untyped =
+template s*(value: string): untyped = # StringParser[string] =
+  sAux(value, lineinfoStr(instantiationInfo(fullpaths = true)))
+
+macro charmatchAux(charset: set[char], pos: string): untyped =
   ## Matches repeatedly against any character in the set
-  let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: string): Maybe[(string, string), string] =
       var pos = 0
@@ -186,9 +196,11 @@ macro charmatch*(charset: set[char]): untyped =
       )
     )
 
-macro allbut*(but: string): untyped =
+template charmatch*(charset: set[char]): untyped =
+  charmatchAux(charset, lineinfoStr(instantiationInfo(fullpaths = true)))
+
+macro allbutAux(but: string, pos: string): untyped =
   ## Matches anything up to ``but``.
-  let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: string): Maybe[(string, string), string] =
       var pos = input.find(`but`)
@@ -203,6 +215,9 @@ macro allbut*(but: string): untyped =
       )
     )
 
+template allbut*(but: string): untyped =
+  allbutAux(but, lineinfoStr(instantiationInfo(fullpaths = true)))
+
 proc optional*[T, U](parser: Parser[T, U]): Parser[T, U] =
   ## An optional wrapper, will remove any error from the parser and pretend it has
   ## a value if it doesn't already have one. This means that the value is left
@@ -214,7 +229,6 @@ proc optional*[T, U](parser: Parser[T, U]): Parser[T, U] =
     result.hasValue = true
     #result.errors = nil
   )
-
 
 proc repeat*[T, U](body: Parser[T, U], atLeast: int = 1): Parser[seq[T], U] =
   ## Returns a parser that returns a sequence of the input parsers type.
@@ -482,16 +496,18 @@ proc onerror*[T, U](parser: Parser[T, U], message: string, wrap = false): Parser
         result.errors = Error[U](kind: Stem, stemError: message, stem: result.errors, input: input)
   )
 
-macro raisehere*[T, U](parser: Parser[T, U], original: string = ""): untyped =
+macro raisehereAux[T, U](parser: Parser[T, U], original: string = "", pos: string): untyped =
   ## For help with debugging or to achieve early termination. Will raise any
   ## error immediately if parser has no result, otherwise it does nothing.
-  let pos = lineInfo(callsite())
   result = quote do:
     (proc (input: U): Maybe[(T, U), U] =
       result = parser(input)
       if not result.hasValue:
         raise newException(ParseError, `pos` & ": Unable to parse:\n" & getError(result, original).indent(2) & "\n")
     )
+
+template raisehere*[T, U](parser: Parser[T, U], original: string = ""): untyped =
+  raisehereAux(parser, original, lineinfoStr(instantiationInfo(fullpaths = true)))
 
 proc `$`*[T](input: Maybe[T, string]): string =
   if input.errors != nil:
@@ -511,4 +527,3 @@ proc parse*[T](parser: Parser[T, string], input: string, longError = false): T =
       raise newException(ParseError, "Unable to parse:\n" & getError(res, input).indent(2) & "\n")
     else:
       raise newException(ParseError, "Unable to parse:\n" & getShortError(res, input).indent(2) & "\n")
-
