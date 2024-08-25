@@ -362,7 +362,7 @@ proc flatMap*[T, U, V](parser: Parser[T, V], f: (proc(value: T): Parser[U, V])):
       Something(ret, xresult, "flatMap operation", input)
       return ret
     else:
-      let ret = Nothing[(U, string)](xresult, "Unable to flat-map onto bad output", input)
+      let ret = Nothing(xresult, "Unable to flat-map onto bad output", input)
       return ret
   )
 
@@ -375,7 +375,7 @@ proc chainl*[T, U](p: Parser[T, U], q: Parser[(proc(a: T, b: T): T), U], allowEm
       first = p(input)
       (firstVal, rest) = first.value
     if not first.hasValue:
-      return Nothing[(T, U), (T, U)](first, "Chainl operation failed: First value not matching", input)
+      return Nothing(first, "Chainl operation failed: First value not matching", input)
     if rest.len == 0:
       return first
     var ret = (q + p).repeat(if allowEmpty: 0 else: 1).map(proc(values: seq[((proc(a: T, b: T): T), T)]): T =
